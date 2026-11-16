@@ -4,7 +4,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
-  // Fase 1: alias(libs.plugins.google.devtools.ksp)
+  alias(libs.plugins.google.devtools.ksp)
 }
 
 android {
@@ -112,15 +112,16 @@ dependencies {
   implementation(libs.kotlinx.serialization.json)
 
   // Fase 1: Room (via KSP) e WorkManager
-  // implementation(libs.androidx.room.ktx)
-  // implementation(libs.androidx.room.runtime)
-  // "ksp"(libs.androidx.room.compiler)
-  // implementation(libs.androidx.work.runtime.ktx)
+  implementation(libs.androidx.room.ktx)
+  implementation(libs.androidx.room.runtime)
+  ksp(libs.androidx.room.compiler)
+  implementation(libs.androidx.work.runtime.ktx)
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.espresso.core)
   testImplementation(libs.androidx.junit)
+  testImplementation(libs.androidx.work.testing)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.robolectric)

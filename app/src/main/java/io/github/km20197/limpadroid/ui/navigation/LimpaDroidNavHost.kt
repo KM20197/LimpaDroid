@@ -14,6 +14,8 @@ import io.github.km20197.limpadroid.ui.home.HomeScreen
 import io.github.km20197.limpadroid.ui.home.HomeViewModel
 import io.github.km20197.limpadroid.ui.onboarding.OnboardingScreen
 import io.github.km20197.limpadroid.ui.onboarding.OnboardingViewModel
+import io.github.km20197.limpadroid.ui.scan.ScanStatusScreen
+import io.github.km20197.limpadroid.ui.scan.ScanStatusViewModel
 
 @Composable
 fun LimpaDroidNavHost(
@@ -54,12 +56,18 @@ fun LimpaDroidNavHost(
       val homeViewModel: HomeViewModel = viewModel(
         factory = HomeViewModel.Factory(
           permissionChecker = container.permissionChecker,
+          scanController = container.scanController,
         ),
       )
       HomeScreen(
         viewModel = homeViewModel,
         onOpenDiagnostic = {
           navController.navigate(DiagnosticRoute) {
+            launchSingleTop = true
+          }
+        },
+        onOpenScanDetails = {
+          navController.navigate(ScanStatusRoute) {
             launchSingleTop = true
           }
         },
@@ -74,6 +82,19 @@ fun LimpaDroidNavHost(
       )
       DiagnosticScreen(
         viewModel = diagnosticViewModel,
+        onNavigateBack = { navController.popBackStack() },
+      )
+    }
+
+    composable<ScanStatusRoute> {
+      val scanStatusViewModel: ScanStatusViewModel = viewModel(
+        factory = ScanStatusViewModel.Factory(
+          permissionChecker = container.permissionChecker,
+          scanController = container.scanController,
+        ),
+      )
+      ScanStatusScreen(
+        viewModel = scanStatusViewModel,
         onNavigateBack = { navController.popBackStack() },
       )
     }

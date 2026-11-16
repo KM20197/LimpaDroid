@@ -77,4 +77,37 @@
     <string name="diagnostic_exists_no">Ausente</string>
     <string name="diagnostic_sdk_app_format">SDK API %1$d · App %2$s</string>
     <string name="diagnostic_entry_error_format">Erro: %1$s</string>
+
+    <!-- Infraestrutura de varredura (Fase 1) -->
+    <string name="scan_notification_channel_name">Varredura do armazenamento</string>
+    <string name="scan_notification_channel_desc">Progresso da varredura local em segundo plano.</string>
+    <string name="scan_notification_title">Varredura em andamento</string>
+    <string name="scan_notification_text">%1$d arquivos analisados · %2$d erros</string>
+
+    <string name="home_scan_card_title">Varredura do armazenamento</string>
+    <string name="home_scan_idle_desc">Nenhuma varredura iniciada. Inicie a indexação recursiva local com controle de pausa e retomada.</string>
+    <string name="home_scan_perm_required">Conceda o acesso a todos os arquivos para iniciar a varredura.</string>
+    <string name="home_scan_start">Iniciar varredura</string>
+    <string name="home_scan_new">Nova varredura</string>
+    <string name="home_scan_pause">Pausar</string>
+    <string name="home_scan_resume">Retomar</string>
+    <string name="home_scan_cancel">Cancelar</string>
+    <string name="home_scan_details">Detalhes</string>
+    <string name="home_scan_metrics_format">%1$d arquivos · %2$d pastas · %3$s · %4$d erros</string>
+    <string name="home_scan_storage_error">Armazenamento indisponível: %1$s</string>
+
+    <string name="scan_status_running">Em andamento</string>
+    <string name="scan_status_paused">Pausada</string>
+    <string name="scan_status_cancelled">Cancelada</string>
+    <string name="scan_status_completed">Concluída</string>
+    <string name="scan_status_failed">Falha</string>
+
+    <string name="scan_screen_title">Detalhes da varredura</string>
+    <string name="scan_screen_empty">Nenhuma sessão de varredura registrada até o momento.</string>
+    <string name="scan_screen_scope_note">Escopo protegido: links simbólicos não são seguidos e pastas Android/data, Android/obb e .lixeira são ignoradas automaticamente.</string>
+    <string name="scan_screen_root_label">Raiz: %1$s</string>
+    <string name="scan_screen_last_path_label">Último caminho: %1$s</string>
+    <string name="scan_screen_checkpoint_label">Subárvores concluídas no ponto de retomada: %1$d</string>
+    <string name="scan_screen_errors_title">Erros de leitura registrados (%1$d)</string>
+    <string name="scan_screen_errors_empty">Nenhum erro de leitura registrado nesta sessão.</string>
 </resources>

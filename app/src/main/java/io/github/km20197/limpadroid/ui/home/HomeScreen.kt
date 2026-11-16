@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -28,17 +30,25 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoDelete
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -48,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,6 +74,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.km20197.limpadroid.R
+import io.github.km20197.limpadroid.domain.format.ByteFormatter
+import io.github.km20197.limpadroid.domain.model.ScanSession
+import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.ui.theme.MonoPathTextStyle
 import kotlinx.coroutines.launch
 
@@ -78,12 +92,21 @@ private data class CategoryOverviewItem(
 fun HomeScreen(
   viewModel: HomeViewModel,
   onOpenDiagnostic: () -> Unit,
+  onOpenScanDetails: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
   val hintMessage = stringResource(R.string.home_version_hint)
+  val storageErrorFormat = stringResource(R.string.home_scan_storage_error, uiState.scanActionMessage.orEmpty())
+
+  LaunchedEffect(uiState.scanActionMessage) {
+    if (uiState.scanActionMessage != null) {
+      snackbarHostState.showSnackbar(storageErrorFormat)
+      viewModel.clearScanActionMessage()
+    }
+  }
 
   LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
     viewModel.refreshPermissions()
@@ -218,6 +241,16 @@ fun HomeScreen(
             }
           }
 
+          ScanInfrastructureCard(
+            hasAllFilesAccess = uiState.hasAllFilesAccess,
+            session = uiState.latestScanSession,
+            onStart = viewModel::startInfrastructureScan,
+            onPause = viewModel::pauseActiveScan,
+            onResume = viewModel::resumePausedScan,
+            onCancel = viewModel::cancelActiveOrPausedScan,
+            onOpenDetails = onOpenScanDetails,
+          )
+
           if (useTwoColumns) {
             categories.chunked(2).forEach { pair ->
               Row(
@@ -322,6 +355,228 @@ fun HomeScreen(
         }
       }
     }
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ScanInfrastructureCard(
+  hasAllFilesAccess: Boolean,
+  session: ScanSession?,
+  onStart: () -> Unit,
+  onPause: () -> Unit,
+  onResume: () -> Unit,
+  onCancel: () -> Unit,
+  onOpenDetails: () -> Unit,
+) {
+  ElevatedCard(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("card_scan_infrastructure"),
+  ) {
+    Column(
+      modifier = Modifier.padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Radar,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+        Text(
+          text = stringResource(R.string.home_scan_card_title),
+          style = MaterialTheme.typography.titleMedium,
+          modifier = Modifier.weight(1f),
+        )
+        if (session != null) {
+          ScanStatusBadge(status = session.status)
+        }
+      }
+
+      if (session == null) {
+        Text(
+          text = stringResource(R.string.home_scan_idle_desc),
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      } else {
+        if (session.status == ScanStatus.RUNNING) {
+          LinearProgressIndicator(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("home_scan_progress"),
+          )
+        }
+        Text(
+          text = stringResource(
+            R.string.home_scan_metrics_format,
+            session.scannedFiles,
+            session.scannedDirs,
+            ByteFormatter.format(session.scannedBytes),
+            session.errorCount,
+          ),
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+          modifier = Modifier.testTag("home_scan_metrics"),
+        )
+        session.lastProcessedPath?.let { path ->
+          Text(
+            text = path,
+            style = MonoPathTextStyle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+          )
+        }
+      }
+
+      if (!hasAllFilesAccess) {
+        Text(
+          text = stringResource(R.string.home_scan_perm_required),
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.error,
+        )
+      }
+
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        when (session?.status) {
+          ScanStatus.RUNNING -> {
+            FilledTonalButton(
+              onClick = onPause,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_pause_scan_button"),
+            ) {
+              Icon(Icons.Filled.Pause, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(stringResource(R.string.home_scan_pause))
+            }
+            OutlinedButton(
+              onClick = onCancel,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_cancel_scan_button"),
+            ) {
+              Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(stringResource(R.string.home_scan_cancel))
+            }
+          }
+
+          ScanStatus.PAUSED -> {
+            Button(
+              onClick = onResume,
+              enabled = hasAllFilesAccess,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_resume_scan_button"),
+            ) {
+              Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(stringResource(R.string.home_scan_resume))
+            }
+            OutlinedButton(
+              onClick = onCancel,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_cancel_scan_button"),
+            ) {
+              Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(stringResource(R.string.home_scan_cancel))
+            }
+          }
+
+          else -> {
+            Button(
+              onClick = onStart,
+              enabled = hasAllFilesAccess,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_start_scan_button"),
+            ) {
+              Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(
+                stringResource(
+                  if (session == null) R.string.home_scan_start else R.string.home_scan_new,
+                ),
+              )
+            }
+          }
+        }
+
+        if (session != null) {
+          TextButton(
+            onClick = onOpenDetails,
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("home_scan_details_button"),
+          ) {
+            Text(stringResource(R.string.home_scan_details))
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+internal fun ScanStatusBadge(status: ScanStatus) {
+  val (labelRes, bgColor, textColor) = when (status) {
+    ScanStatus.RUNNING -> Triple(
+      R.string.scan_status_running,
+      MaterialTheme.colorScheme.primaryContainer,
+      MaterialTheme.colorScheme.onPrimaryContainer,
+    )
+    ScanStatus.PAUSED -> Triple(
+      R.string.scan_status_paused,
+      MaterialTheme.colorScheme.tertiaryContainer,
+      MaterialTheme.colorScheme.onTertiaryContainer,
+    )
+    ScanStatus.CANCELLED -> Triple(
+      R.string.scan_status_cancelled,
+      MaterialTheme.colorScheme.surfaceVariant,
+      MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    ScanStatus.COMPLETED -> Triple(
+      R.string.scan_status_completed,
+      MaterialTheme.colorScheme.secondaryContainer,
+      MaterialTheme.colorScheme.onSecondaryContainer,
+    )
+    ScanStatus.FAILED -> Triple(
+      R.string.scan_status_failed,
+      MaterialTheme.colorScheme.errorContainer,
+      MaterialTheme.colorScheme.onErrorContainer,
+    )
+  }
+
+  Surface(
+    color = bgColor,
+    shape = MaterialTheme.shapes.small,
+    modifier = Modifier.testTag("scan_status_badge"),
+  ) {
+    Text(
+      text = stringResource(labelRes),
+      style = MaterialTheme.typography.labelMedium,
+      color = textColor,
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+    )
   }
 }
 

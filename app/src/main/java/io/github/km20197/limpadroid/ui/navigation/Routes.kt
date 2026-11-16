@@ -10,3 +10,6 @@ data object HomeRoute
 
 @Serializable
 data object DiagnosticRoute
+
+@Serializable
+data object ScanStatusRoute
