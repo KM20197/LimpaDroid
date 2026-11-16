@@ -14,10 +14,19 @@ Aplicativo Android pessoal (Android 11 a Android 17 — `minSdk = 30`, `targetSd
 
 ## Compilação local
 
-Requisitos: JDK 17, Android SDK Platform 37 (`platforms;android-37` via canal Canary quando em Preview), Gradle Wrapper (`9.3.1`). Caso `debug.keystore` não exista na raiz do repositório clonado, decodifique-o antes de compilar:
+Requisitos: JDK 17, Android SDK Platform 37 (`platforms;android-37.0` via canal Canary) e Gradle Wrapper (`9.3.1`). Caso `debug.keystore` não exista na raiz do repositório clonado, gere a chave de depuração localmente com `keytool` antes de compilar:
 
 ```bash
-base64 -d debug.keystore.base64 > debug.keystore
+keytool -genkeypair -v \
+  -keystore debug.keystore \
+  -storepass android \
+  -alias androiddebugkey \
+  -keypass android \
+  -dname "CN=Android Debug,O=Android,C=US" \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000
+
 ./gradlew lint testDebugUnitTest assembleDebug
 ```
 

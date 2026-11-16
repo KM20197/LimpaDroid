@@ -40,7 +40,7 @@ Este documento registra as verificações prévias da Seção 12 do Plano de Des
 - `gradle/actions/setup-gradle@v6.4.1`
 - `actions/upload-artifact@v7.0.2`
 - `softprops/action-gh-release@v3.0.3`
-- **Wrapper, keystore e canal do SDK no CI:** O Gradle Wrapper `9.3.1` (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) foi gerado e versionado no repositório para que `ci.yml` execute `./gradlew lint testDebugUnitTest assembleDebug`. Como o ambiente AI Studio requer a preservação de `signingConfigs` (`debugConfig` apontando para `debug.keystore`), o workflow de CI decodifica `debug.keystore.base64` para `debug.keystore` antes da compilação de depuração. Para instalar `platforms;android-37`, o `ci.yml` utiliza `sdkmanager --channel=3` (canal Canary/Preview) com resolução dinâmica de `build-tools;37.*` e fallback para `build-tools;36.0.0` (padrão do AGP 9.1.1).
+- **Wrapper, keystore e canal do SDK no CI:** O Gradle Wrapper `9.3.1` (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) foi gerado e versionado no repositório para que `ci.yml` execute `./gradlew lint testDebugUnitTest assembleDebug`. Como o ambiente AI Studio requer a preservação de `signingConfigs` (`debugConfig` apontando para `debug.keystore`) e o arquivo `debug.keystore.base64` não é versionado na branch `main` do GitHub, o workflow de CI gera temporariamente `debug.keystore` via `keytool` antes da compilação de depuração (mantendo a chave de lançamento separada em GitHub Secrets). Para instalar a plataforma Android 17 compatível com o AGP `9.1.1`, o `ci.yml` utiliza `sdkmanager --channel=3 "platforms;android-37.0" "build-tools;36.0.0"`.
 
 ---
 

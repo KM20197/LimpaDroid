@@ -3,10 +3,9 @@
 ## Fase 0: Validação inicial no dispositivo (Android 11 a 17)
 
 ### 1. Instalação do APK debug
-Baixe o artefato `limpadroid-debug-apk` gerado pelo workflow `ci.yml` no GitHub Actions ou compile localmente:
+Baixe o artefato `limpadroid-debug-apk` gerado pelo workflow `ci.yml` no GitHub Actions ou compile localmente (gerando `debug.keystore` com `keytool` caso ainda não exista na raiz):
 
 ```bash
-base64 -d debug.keystore.base64 > debug.keystore
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
