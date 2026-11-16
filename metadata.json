@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "LimpaDroid",
+  "description": "Aplicativo pessoal de limpeza de armazenamento para Android 17 com lixeira interna de 30 dias.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

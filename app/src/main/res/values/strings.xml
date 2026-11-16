@@ -1,3 +1,81 @@
 <resources>
-    <string name="app_name">My Application</string>
+    <string name="app_name">LimpaDroid</string>
+
+    <!-- Geral -->
+    <string name="cd_back">Voltar</string>
+    <string name="cd_refresh">Atualizar</string>
+    <string name="cd_copy">Copiar relatório</string>
+    <string name="action_retry">Tentar novamente</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Acesso ao armazenamento</string>
+    <string name="onboarding_subtitle">Configuração inicial para uso local, sem acesso à rede e sem envio de dados.</string>
+    <string name="onboarding_storage_title">Acesso a todos os arquivos</string>
+    <string name="onboarding_storage_desc">Necessário para analisar pastas na raiz, arquivos duplicados e mídias em Android/media (incluindo WhatsApp). Pastas Android/data e Android/obb permanecem protegidas pelo sistema e fora do escopo.</string>
+    <string name="onboarding_storage_status_granted">Permissão concedida</string>
+    <string name="onboarding_storage_status_pending">Permissão pendente</string>
+    <string name="onboarding_storage_button">Abrir configurações de acesso</string>
+    <string name="onboarding_storage_granted_button">Acesso verificado</string>
+
+    <string name="onboarding_notifications_title">Notificações (opcional)</string>
+    <string name="onboarding_notifications_desc">Exibe o andamento de varreduras longas em segundo plano e avisos do expurgo automático da lixeira após 30 dias.</string>
+    <string name="onboarding_notifications_granted">Notificações ativadas</string>
+    <string name="onboarding_notifications_allow">Permitir notificações</string>
+    <string name="onboarding_notifications_skip">Continuar sem notificações</string>
+    <string name="onboarding_notifications_warning">Notificações desativadas: você pode prosseguir normalmente, mas o progresso em segundo plano e avisos de expurgo não serão exibidos.</string>
+    <string name="onboarding_continue">Continuar para o Início</string>
+    <string name="onboarding_continue_hint">Conceda o acesso a todos os arquivos para avançar.</string>
+
+    <!-- Início -->
+    <string name="home_title">LimpaDroid</string>
+    <string name="home_subtitle">Armazenamento compartilhado · 100% local</string>
+    <string name="home_perm_ok">Acesso amplo a arquivos ativo</string>
+    <string name="home_perm_missing">Acesso amplo a arquivos desativado</string>
+    <string name="home_perm_grant">Conceder</string>
+    <string name="home_notif_disabled_banner">Notificações desativadas. Ative para acompanhar varreduras longas.</string>
+    <string name="home_notif_enable">Ativar</string>
+
+    <string name="cat_superfluous_title">Dados supérfluos</string>
+    <string name="cat_superfluous_desc">Miniaturas em cache, downloads incompletos, arquivos de 0 byte e pastas vazias.</string>
+    <string name="cat_superfluous_phase">Previsto na Fase 2</string>
+
+    <string name="cat_orphan_title">Aplicativos removidos</string>
+    <string name="cat_orphan_desc">Pastas residuais de aplicativos já desinstalados (respeitando aplicativos arquivados).</string>
+    <string name="cat_orphan_phase">Previsto na Fase 4</string>
+
+    <string name="cat_duplicate_title">Arquivos duplicados</string>
+    <string name="cat_duplicate_desc">Conteúdo idêntico por SHA-256 preservando a cópia em pasta de prioridade.</string>
+    <string name="cat_duplicate_phase">Previsto na Fase 5</string>
+
+    <string name="cat_whatsapp_title">Mídia do WhatsApp</string>
+    <string name="cat_whatsapp_desc">Imagens, vídeos, áudios e notas de voz (WhatsApp e Business), sem tocar em Status.</string>
+    <string name="cat_whatsapp_phase">Previsto na Fase 3</string>
+
+    <string name="home_trash_title">Lixeira interna (30 dias)</string>
+    <string name="home_trash_desc">Nenhum arquivo é excluído diretamente. Remoção reversível por 30 dias antes do expurgo definitivo. Previsto na Fase 1.</string>
+    <string name="home_trash_warning">Aviso: a lixeira reside em Android/media; desinstalar o aplicativo apaga os itens armazenados nela.</string>
+
+    <string name="home_version_format">Versão %1$s (%2$d) · Segure para diagnóstico</string>
+    <string name="home_version_hint">Mantenha pressionada a versão para abrir o modo diagnóstico.</string>
+    <string name="home_version_long_click_label">Abrir modo diagnóstico</string>
+
+    <!-- Modo Diagnóstico -->
+    <string name="diagnostic_title">Modo diagnóstico</string>
+    <string name="diagnostic_loading">Inspecionando diretórios locais…</string>
+    <string name="diagnostic_error_generic">Não foi possível concluir a inspeção: %1$s</string>
+    <string name="diagnostic_copied">Relatório copiado para a área de transferência.</string>
+    <string name="diagnostic_copy_button">Copiar</string>
+    <string name="diagnostic_summary_title">Estado do sistema</string>
+    <string name="diagnostic_perm_granted">Acesso amplo: Concedido</string>
+    <string name="diagnostic_perm_denied">Acesso amplo: Negado</string>
+    <string name="diagnostic_media_accessible">Android/media: Acessível</string>
+    <string name="diagnostic_media_inaccessible">Android/media: Inacessível ou ausente</string>
+    <string name="diagnostic_whatsapp_title">Raízes esperadas do WhatsApp</string>
+    <string name="diagnostic_android_media_title">Android/media (2 níveis)</string>
+    <string name="diagnostic_root_title">Raiz /storage/emulated/0 (2 níveis)</string>
+    <string name="diagnostic_empty_dir">Nenhuma entrada encontrada ou pasta inacessível.</string>
+    <string name="diagnostic_exists_yes">Presente</string>
+    <string name="diagnostic_exists_no">Ausente</string>
+    <string name="diagnostic_sdk_app_format">SDK API %1$d · App %2$s</string>
+    <string name="diagnostic_entry_error_format">Erro: %1$s</string>
 </resources>
