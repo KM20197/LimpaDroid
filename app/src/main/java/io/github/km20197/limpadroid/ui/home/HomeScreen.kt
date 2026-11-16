@@ -1,6 +1,7 @@
 package io.github.km20197.limpadroid.ui.home
 
 import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -68,7 +69,6 @@ import kotlinx.coroutines.launch
 private data class CategoryOverviewItem(
   val titleRes: Int,
   val descRes: Int,
-  val phaseRes: Int,
   val icon: ImageVector,
   val tag: String,
 )
@@ -106,28 +106,24 @@ fun HomeScreen(
       CategoryOverviewItem(
         titleRes = R.string.cat_superfluous_title,
         descRes = R.string.cat_superfluous_desc,
-        phaseRes = R.string.cat_superfluous_phase,
         icon = Icons.Filled.CleaningServices,
         tag = "card_category_superfluous",
       ),
       CategoryOverviewItem(
         titleRes = R.string.cat_orphan_title,
         descRes = R.string.cat_orphan_desc,
-        phaseRes = R.string.cat_orphan_phase,
         icon = Icons.Filled.FolderOff,
         tag = "card_category_orphan",
       ),
       CategoryOverviewItem(
         titleRes = R.string.cat_duplicate_title,
         descRes = R.string.cat_duplicate_desc,
-        phaseRes = R.string.cat_duplicate_phase,
         icon = Icons.Filled.ContentCopy,
         tag = "card_category_duplicate",
       ),
       CategoryOverviewItem(
         titleRes = R.string.cat_whatsapp_title,
         descRes = R.string.cat_whatsapp_desc,
-        phaseRes = R.string.cat_whatsapp_phase,
         icon = Icons.Filled.Forum,
         tag = "card_category_whatsapp",
       ),
@@ -205,7 +201,13 @@ fun HomeScreen(
                   modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                  onClick = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                  onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                      viewModel.refreshPermissions()
+                    }
+                  },
                   modifier = Modifier
                     .heightIn(min = 48.dp)
                     .testTag("home_enable_notifications_button"),
@@ -413,17 +415,11 @@ private fun CategoryOverviewCard(
             modifier = Modifier.size(20.dp),
           )
         }
-        Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = stringResource(item.titleRes),
-            style = MaterialTheme.typography.titleMedium,
-          )
-          Text(
-            text = stringResource(item.phaseRes),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary,
-          )
-        }
+        Text(
+          text = stringResource(item.titleRes),
+          style = MaterialTheme.typography.titleMedium,
+          modifier = Modifier.weight(1f),
+        )
       }
       Text(
         text = stringResource(item.descRes),

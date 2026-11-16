@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import androidx.core.content.ContextCompat
@@ -22,10 +23,14 @@ class AndroidPermissionChecker(
   override fun hasAllFilesAccess(): Boolean = Environment.isExternalStorageManager()
 
   override fun hasNotificationPermission(): Boolean =
-    ContextCompat.checkSelfPermission(
-      context,
-      Manifest.permission.POST_NOTIFICATIONS,
-    ) == PackageManager.PERMISSION_GRANTED
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS,
+      ) == PackageManager.PERMISSION_GRANTED
+    } else {
+      true
+    }
 
   override fun createAllFilesAccessIntent(): Intent {
     val packageUri = Uri.fromParts("package", context.packageName, null)

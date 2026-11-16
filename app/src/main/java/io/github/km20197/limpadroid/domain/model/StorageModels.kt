@@ -51,4 +51,6 @@ data class DiagnosticReport(
   val generatedAtIso: String,
   val appVersion: String,
   val sdkInt: Int,
+  val storageAvailable: Boolean = true,
+  val storageStatusMessage: String? = null,
 )

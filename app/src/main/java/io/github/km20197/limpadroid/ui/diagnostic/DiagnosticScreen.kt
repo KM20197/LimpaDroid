@@ -271,6 +271,21 @@ private fun DiagnosticSummaryCard(report: DiagnosticReport) {
       )
       Text(
         text = stringResource(
+          if (report.storageAvailable) {
+            R.string.diagnostic_storage_available
+          } else {
+            R.string.diagnostic_storage_unavailable
+          },
+        ),
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (report.storageAvailable) {
+          MaterialTheme.colorScheme.secondary
+        } else {
+          MaterialTheme.colorScheme.error
+        },
+      )
+      Text(
+        text = stringResource(
           if (report.androidMediaAccessible) {
             R.string.diagnostic_media_accessible
           } else {
@@ -278,6 +293,11 @@ private fun DiagnosticSummaryCard(report: DiagnosticReport) {
           },
         ),
         style = MaterialTheme.typography.bodyMedium,
+      )
+      Text(
+        text = stringResource(R.string.diagnostic_scope_note),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
       Text(
         text = stringResource(R.string.diagnostic_sdk_app_format, report.sdkInt, report.appVersion),

@@ -1,6 +1,7 @@
 package io.github.km20197.limpadroid.ui.onboarding
 
 import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -308,7 +309,13 @@ fun OnboardingScreen(
                   horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                   OutlinedButton(
-                    onClick = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                    onClick = {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                      } else {
+                        viewModel.onNotificationPermissionResult(true)
+                      }
+                    },
                     modifier = Modifier
                       .weight(1f)
                       .heightIn(min = 48.dp)

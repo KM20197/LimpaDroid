@@ -13,7 +13,7 @@ android {
 
   defaultConfig {
     applicationId = "io.github.km20197.limpadroid"
-    minSdk = 37
+    minSdk = 30
     targetSdk = 37
     versionCode = (System.getenv("VERSION_CODE")?.toIntOrNull()) ?: 1
     versionName = System.getenv("VERSION_NAME") ?: "0.1.0"
@@ -42,7 +42,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -56,8 +57,8 @@ android {
   }
 
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
 
   buildFeatures {
@@ -87,7 +88,7 @@ android {
 
 kotlin {
   compilerOptions {
-    jvmTarget.set(JvmTarget.JVM_21)
+    jvmTarget.set(JvmTarget.JVM_17)
   }
 }
 

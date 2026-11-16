@@ -16,8 +16,12 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
+import io.github.km20197.limpadroid.data.fs.AndroidStorageVolumeResolver
 import io.github.km20197.limpadroid.data.fs.DefaultStorageDiagnosticRepository
 import io.github.km20197.limpadroid.data.fs.StorageDiagnosticRepository
+import io.github.km20197.limpadroid.data.fs.StorageRootResolution
+import io.github.km20197.limpadroid.data.fs.StorageVolumeResolver
+import io.github.km20197.limpadroid.data.permission.AndroidPermissionChecker
 import io.github.km20197.limpadroid.data.permission.PermissionChecker
 import io.github.km20197.limpadroid.data.prefs.AppPreferencesRepository
 import io.github.km20197.limpadroid.domain.diagnostic.DirectoryInspector
@@ -58,12 +62,26 @@ class LimpaDroidRobolectricTest {
     val permissions = packageInfo.requestedPermissions?.toSet().orEmpty()
 
     assertTrue(permissions.contains(Manifest.permission.MANAGE_EXTERNAL_STORAGE))
-    assertTrue(permissions.contains(Manifest.permission.QUERY_ALL_PACKAGES))
+    assertFalse(permissions.contains(Manifest.permission.QUERY_ALL_PACKAGES))
     assertTrue(permissions.contains(Manifest.permission.POST_NOTIFICATIONS))
     assertTrue(permissions.contains(Manifest.permission.FOREGROUND_SERVICE))
     assertTrue(permissions.contains(Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC))
     assertFalse(permissions.contains(Manifest.permission.INTERNET))
     assertEquals("LimpaDroid", context.getString(R.string.app_name))
+  }
+
+  @Test
+  @Config(sdk = [30])
+  fun `android 11 runtime checks handle notifications and storage volume cleanly`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val checker = AndroidPermissionChecker(context)
+    assertTrue(checker.hasNotificationPermission())
+
+    val resolver = AndroidStorageVolumeResolver(context)
+    val resolution = resolver.resolvePrimarySharedStorage()
+    assertTrue(
+      resolution is StorageRootResolution.Available || resolution is StorageRootResolution.Unavailable,
+    )
   }
 
   @Test
@@ -166,8 +184,11 @@ class LimpaDroidRobolectricTest {
     override val diagnosticRepository: StorageDiagnosticRepository =
       DefaultStorageDiagnosticRepository(
         permissionChecker = permissionChecker,
+        volumeResolver = object : StorageVolumeResolver {
+          override fun resolvePrimarySharedStorage(): StorageRootResolution =
+            StorageRootResolution.Available(rootPath = rootPath, volumeDescription = "Armazenamento de teste")
+        },
         inspector = DirectoryInspector(),
-        storageRootPath = rootPath,
       )
   }
 }

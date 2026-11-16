@@ -162,7 +162,10 @@ class DirectoryInspector(
       appendLine("Gerado em: ${report.generatedAtIso}")
       appendLine("Versão do app: ${report.appVersion}")
       appendLine("Android SDK: ${report.sdkInt}")
-      appendLine("Raiz: ${report.storageRoot}")
+      appendLine("Volume primário disponível: ${if (report.storageAvailable) "SIM" else "NÃO"}")
+      appendLine("Raiz resolvida: ${report.storageRoot}")
+      report.storageStatusMessage?.let { appendLine("Volume: $it") }
+      appendLine("Escopo v1: Armazenamento interno compartilhado primário (cartão SD e USB fora do escopo)")
       appendLine("MANAGE_EXTERNAL_STORAGE: ${if (report.hasAllFilesAccess) "CONCEDIDA" else "NEGADA"}")
       appendLine("Android/media acessível: ${if (report.androidMediaAccessible) "SIM" else "NÃO"}")
       appendLine()
@@ -187,7 +190,7 @@ class DirectoryInspector(
         appendEntries(report.androidMediaEntries)
       }
       appendLine()
-      appendLine("--- Raiz (2 níveis) ---")
+      appendLine("--- Armazenamento compartilhado primário (2 níveis) ---")
       if (report.rootEntries.isEmpty()) {
         appendLine("(vazio ou inacessível)")
       } else {

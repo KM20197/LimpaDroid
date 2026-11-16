@@ -2,6 +2,7 @@ package io.github.km20197.limpadroid
 
 import android.app.Application
 import android.content.Context
+import io.github.km20197.limpadroid.data.fs.AndroidStorageVolumeResolver
 import io.github.km20197.limpadroid.data.fs.DefaultStorageDiagnosticRepository
 import io.github.km20197.limpadroid.data.fs.StorageDiagnosticRepository
 import io.github.km20197.limpadroid.data.permission.AndroidPermissionChecker
@@ -30,6 +31,7 @@ class DefaultAppContainer(
   override val diagnosticRepository: StorageDiagnosticRepository by lazy {
     DefaultStorageDiagnosticRepository(
       permissionChecker = permissionChecker,
+      volumeResolver = AndroidStorageVolumeResolver(context),
       inspector = DirectoryInspector(),
     )
   }
