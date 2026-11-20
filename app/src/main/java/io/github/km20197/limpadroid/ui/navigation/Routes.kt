@@ -13,3 +13,15 @@ data object DiagnosticRoute
 
 @Serializable
 data object ScanStatusRoute
+
+@Serializable
+data object TrashRoute
+
+@Serializable
+data object HistoryRoute
+
+@Serializable
+data class CategoryResultsRoute(val categoryName: String)
+
+@Serializable
+data object SettingsRoute

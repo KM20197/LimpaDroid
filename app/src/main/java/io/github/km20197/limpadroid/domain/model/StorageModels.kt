@@ -31,6 +31,7 @@ data class DiagnosticEntry(
   val sizeBytes: Long,
   val children: List<DiagnosticEntry> = emptyList(),
   val error: String? = null,
+  val isTruncationNotice: Boolean = false,
 )
 
 data class WhatsAppRootStatus(
@@ -39,6 +40,7 @@ data class WhatsAppRootStatus(
   val exists: Boolean,
   val readable: Boolean,
   val subFolders: List<String> = emptyList(),
+  val truncated: Boolean = false,
 )
 
 data class DiagnosticReport(

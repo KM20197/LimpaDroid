@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -46,6 +47,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -75,12 +77,16 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.km20197.limpadroid.R
 import io.github.km20197.limpadroid.domain.format.ByteFormatter
+import io.github.km20197.limpadroid.domain.model.Category
+import io.github.km20197.limpadroid.domain.model.CategorySummary
 import io.github.km20197.limpadroid.domain.model.ScanSession
 import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.ui.theme.MonoPathTextStyle
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 private data class CategoryOverviewItem(
+  val category: Category,
   val titleRes: Int,
   val descRes: Int,
   val icon: ImageVector,
@@ -93,7 +99,11 @@ fun HomeScreen(
   viewModel: HomeViewModel,
   onOpenDiagnostic: () -> Unit,
   onOpenScanDetails: () -> Unit,
+  onOpenTrash: () -> Unit,
+  onOpenHistory: () -> Unit,
   modifier: Modifier = Modifier,
+  onOpenCategoryResults: (Category) -> Unit = {},
+  onOpenSettings: () -> Unit = {},
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
@@ -127,24 +137,28 @@ fun HomeScreen(
   val categories = remember {
     listOf(
       CategoryOverviewItem(
+        category = Category.SUPERFLUOUS,
         titleRes = R.string.cat_superfluous_title,
         descRes = R.string.cat_superfluous_desc,
         icon = Icons.Filled.CleaningServices,
         tag = "card_category_superfluous",
       ),
       CategoryOverviewItem(
+        category = Category.ORPHAN,
         titleRes = R.string.cat_orphan_title,
         descRes = R.string.cat_orphan_desc,
         icon = Icons.Filled.FolderOff,
         tag = "card_category_orphan",
       ),
       CategoryOverviewItem(
+        category = Category.DUPLICATE,
         titleRes = R.string.cat_duplicate_title,
         descRes = R.string.cat_duplicate_desc,
         icon = Icons.Filled.ContentCopy,
         tag = "card_category_duplicate",
       ),
       CategoryOverviewItem(
+        category = Category.WHATSAPP,
         titleRes = R.string.cat_whatsapp_title,
         descRes = R.string.cat_whatsapp_desc,
         icon = Icons.Filled.Forum,
@@ -169,6 +183,19 @@ fun HomeScreen(
               text = stringResource(R.string.home_subtitle),
               style = MaterialTheme.typography.labelMedium,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        },
+        actions = {
+          IconButton(
+            onClick = onOpenSettings,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("home_settings_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Settings,
+              contentDescription = stringResource(R.string.settings_title),
             )
           }
         },
@@ -251,6 +278,15 @@ fun HomeScreen(
             onOpenDetails = onOpenScanDetails,
           )
 
+          val isScanBusy = uiState.latestScanSession?.status == ScanStatus.RUNNING
+          fun summaryFor(cat: Category): CategorySummary = when (cat) {
+            Category.SUPERFLUOUS -> uiState.superfluousSummary
+            Category.ORPHAN -> uiState.orphanSummary
+            Category.DUPLICATE -> uiState.duplicateSummary
+            Category.WHATSAPP -> uiState.whatsappSummary
+          }
+          fun isCategoryReady(cat: Category): Boolean = true
+
           if (useTwoColumns) {
             categories.chunked(2).forEach { pair ->
               Row(
@@ -258,8 +294,22 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
               ) {
                 pair.forEach { item ->
+                  val ready = isCategoryReady(item.category)
                   CategoryOverviewCard(
                     item = item,
+                    summary = summaryFor(item.category),
+                    hasAllFilesAccess = uiState.hasAllFilesAccess,
+                    isScanBusy = isScanBusy,
+                    onAnalyze = if (ready) {
+                      { viewModel.startCategoryScan(item.category) }
+                    } else {
+                      null
+                    },
+                    onOpenResults = if (ready) {
+                      { onOpenCategoryResults(item.category) }
+                    } else {
+                      null
+                    },
                     modifier = Modifier.weight(1f),
                   )
                 }
@@ -267,8 +317,22 @@ fun HomeScreen(
             }
           } else {
             categories.forEach { item ->
+              val ready = isCategoryReady(item.category)
               CategoryOverviewCard(
                 item = item,
+                summary = summaryFor(item.category),
+                hasAllFilesAccess = uiState.hasAllFilesAccess,
+                isScanBusy = isScanBusy,
+                onAnalyze = if (ready) {
+                  { viewModel.startCategoryScan(item.category) }
+                } else {
+                  null
+                },
+                onOpenResults = if (ready) {
+                  { onOpenCategoryResults(item.category) }
+                } else {
+                  null
+                },
                 modifier = Modifier.fillMaxWidth(),
               )
             }
@@ -301,15 +365,50 @@ fun HomeScreen(
                 )
               }
               Text(
-                text = stringResource(R.string.home_trash_desc),
+                text = stringResource(
+                  R.string.home_trash_metrics_format,
+                  ByteFormatter.format(uiState.trashStats.inTrashBytes),
+                  uiState.trashStats.inTrashCount,
+                  uiState.trashStats.expiringSoonCount,
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.testTag("home_trash_metrics"),
+              )
+              Text(
+                text = stringResource(
+                  R.string.home_trash_freed_format,
+                  ByteFormatter.format(uiState.trashStats.freedBytes),
+                ),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.testTag("home_trash_freed"),
               )
               Text(
                 text = stringResource(R.string.home_trash_warning),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                FilledTonalButton(
+                  onClick = onOpenTrash,
+                  modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("home_open_trash_button"),
+                ) {
+                  Text(stringResource(R.string.home_open_trash))
+                }
+                OutlinedButton(
+                  onClick = onOpenHistory,
+                  modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("home_open_history_button"),
+                ) {
+                  Text(stringResource(R.string.home_open_history))
+                }
+              }
             }
           }
 
@@ -640,10 +739,16 @@ private fun PermissionStatusBanner(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryOverviewCard(
   item: CategoryOverviewItem,
   modifier: Modifier = Modifier,
+  summary: CategorySummary? = null,
+  hasAllFilesAccess: Boolean = false,
+  isScanBusy: Boolean = false,
+  onAnalyze: (() -> Unit)? = null,
+  onOpenResults: (() -> Unit)? = null,
 ) {
   OutlinedCard(
     modifier = modifier.testTag(item.tag),
@@ -681,6 +786,47 @@ private fun CategoryOverviewCard(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
+      val catKey = item.category.name.lowercase(Locale.ROOT)
+      if (summary != null && summary.latestSessionId != null) {
+        Text(
+          text = stringResource(
+            R.string.home_category_metrics_format,
+            summary.candidateCount,
+            ByteFormatter.format(summary.totalBytes),
+          ),
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.testTag("home_${catKey}_metrics"),
+        )
+      }
+      if (onAnalyze != null || onOpenResults != null) {
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          if (onAnalyze != null) {
+            FilledTonalButton(
+              onClick = onAnalyze,
+              enabled = hasAllFilesAccess && !isScanBusy,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_analyze_${catKey}_button"),
+            ) {
+              Text(stringResource(R.string.results_analyze_action))
+            }
+          }
+          if (onOpenResults != null) {
+            OutlinedButton(
+              onClick = onOpenResults,
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("home_open_${catKey}_results_button"),
+            ) {
+              Text(stringResource(R.string.home_view_results_button))
+            }
+          }
+        }
+      }
     }
   }
 }

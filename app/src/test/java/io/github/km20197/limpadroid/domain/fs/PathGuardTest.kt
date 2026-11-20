@@ -106,4 +106,16 @@ class PathGuardTest {
     assertEquals(PathRejectionReason.SYMLINK_FORBIDDEN, (internalDirResult as PathGuardResult.Rejected).reason)
     assertTrue(nestedThroughSymlink is PathGuardResult.Rejected)
   }
+
+  @Test
+  fun `hasProtectedDescendant detects fixed and nested user exclusions`() {
+    val docsDir = Files.createDirectories(root.resolve("Documents/LimpaDroid"))
+    val normalDir = Files.createDirectories(root.resolve("Documents/NormalFolder"))
+
+    assertTrue(guard.hasProtectedDescendant(root.resolve("Documents")))
+    assertTrue(guard.hasProtectedDescendant(docsDir))
+    assertTrue(guard.hasProtectedDescendant(root.resolve("Android")))
+    assertTrue(guard.hasProtectedDescendant(root.resolve("CustomExcluded")))
+    assertFalse(guard.hasProtectedDescendant(normalDir))
+  }
 }

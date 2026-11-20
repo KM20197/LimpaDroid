@@ -8,6 +8,8 @@ import io.github.km20197.limpadroid.BuildConfig
 import io.github.km20197.limpadroid.data.fs.StorageDiagnosticRepository
 import io.github.km20197.limpadroid.domain.diagnostic.DirectoryInspector
 import io.github.km20197.limpadroid.domain.model.DiagnosticReport
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,13 +33,16 @@ class DiagnosticViewModel(
   private val _uiState = MutableStateFlow<DiagnosticUiState>(DiagnosticUiState.Loading)
   val uiState: StateFlow<DiagnosticUiState> = _uiState.asStateFlow()
 
+  private var refreshJob: Job? = null
+
   init {
     refresh()
   }
 
   fun refresh() {
+    refreshJob?.cancel()
     _uiState.value = DiagnosticUiState.Loading
-    viewModelScope.launch {
+    refreshJob = viewModelScope.launch {
       try {
         val report = repository.inspectStorage(appVersion = appVersion, sdkInt = sdkInt)
         val formatted = DirectoryInspector.formatReportAsText(report)
@@ -45,6 +50,8 @@ class DiagnosticViewModel(
           report = report,
           formattedText = formatted,
         )
+      } catch (ce: CancellationException) {
+        throw ce
       } catch (e: Exception) {
         _uiState.value = DiagnosticUiState.Error(
           message = e.message ?: e.javaClass.simpleName,

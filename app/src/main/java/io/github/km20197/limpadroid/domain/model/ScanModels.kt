@@ -22,6 +22,14 @@ data class FileEntry(
   val sizeBytes: Long,
   val lastModified: Long,
   val isDirectory: Boolean,
+  val isEmptyDirectory: Boolean? = null,
+)
+
+data class CategorySummary(
+  val category: Category,
+  val candidateCount: Int = 0,
+  val totalBytes: Long = 0L,
+  val latestSessionId: String? = null,
 )
 
 data class WalkError(
@@ -64,6 +72,7 @@ data class ScanCandidateRecord(
   val sessionId: String,
   val candidate: Candidate,
   val reason: String? = null,
+  val isKept: Boolean = false,
 )
 
 sealed interface ScanEvent {
@@ -84,6 +93,7 @@ sealed interface ScanEvent {
   data class Found(
     val candidate: Candidate,
     val reason: String? = null,
+    val isKept: Boolean = false,
   ) : ScanEvent
 
   data class ErrorLogged(

@@ -8,19 +8,26 @@ import io.github.km20197.limpadroid.data.db.ScanSessionDao
 import io.github.km20197.limpadroid.data.db.ScanSessionEntity
 import io.github.km20197.limpadroid.domain.model.Candidate
 import io.github.km20197.limpadroid.domain.model.Category
+import io.github.km20197.limpadroid.domain.model.CategorySummary
 import io.github.km20197.limpadroid.domain.model.Confidence
 import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
+import io.github.km20197.limpadroid.domain.model.ScanEvent
 import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanSession
 import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
+import io.github.km20197.limpadroid.domain.scan.rules.DuplicateKeepPolicy
 import java.util.UUID
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ScanRepository(
   private val sessionDao: ScanSessionDao,
   private val candidateDao: ScanCandidateDao,
@@ -33,11 +40,137 @@ class ScanRepository(
   fun observeSession(sessionId: String): Flow<ScanSession?> =
     sessionDao.observeSession(sessionId).map { it?.toDomain() }
 
+  fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
+    sessionDao.observeLatestSessionByScopes(scopesFor(category)).map { it?.toDomain() }
+
   fun observeCandidates(sessionId: String): Flow<List<ScanCandidateRecord>> =
     candidateDao.observeForSession(sessionId).map { list -> list.map { it.toDomain() } }
 
+  fun observeCategoryCandidates(category: Category): Flow<List<ScanCandidateRecord>> =
+    sessionDao.observeLatestSessionByScopes(scopesFor(category)).flatMapLatest { session ->
+      if (session == null) {
+        flowOf(emptyList())
+      } else {
+        candidateDao.observeForSessionByCategory(session.id, category.name)
+          .map { list -> list.map { it.toDomain() } }
+      }
+    }
+
+  fun observeCategorySummary(category: Category): Flow<CategorySummary> =
+    sessionDao.observeLatestSessionByScopes(scopesFor(category)).flatMapLatest { session ->
+      if (session == null) {
+        flowOf(CategorySummary(category = category))
+      } else {
+        candidateDao.observeForSessionByCategory(session.id, category.name)
+          .map { list ->
+            val countable = if (category == Category.DUPLICATE) {
+              list.filter { !it.isKept }
+            } else {
+              list
+            }
+            CategorySummary(
+              category = category,
+              candidateCount = countable.size,
+              totalBytes = countable.sumOf { it.sizeBytes },
+              latestSessionId = session.id,
+            )
+          }
+      }
+    }
+
   fun observeRecentErrors(sessionId: String, limit: Int = 200): Flow<List<WalkError>> =
     errorDao.observeRecentForSession(sessionId, limit).map { list -> list.map { it.toDomain() } }
+
+  suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) {
+    val entity = candidateDao.getById(candidateId) ?: return
+    if (entity.category == Category.DUPLICATE.name && !entity.groupId.isNullOrBlank()) {
+      if (entity.isKept) {
+        candidateDao.updatePreselected(candidateId, false)
+        return
+      }
+      val group = candidateDao.getForGroup(entity.sessionId, entity.groupId).map { it.toDomain() }
+      val adjusted = DuplicateKeepPolicy.enforceKeepAtLeastOneCopy(
+        groupRecords = group,
+        desiredSelectionById = mapOf(candidateId to preselected),
+      )
+      candidateDao.updatePreselected(candidateId, adjusted[candidateId] ?: false)
+    } else {
+      candidateDao.updatePreselected(candidateId, preselected)
+    }
+  }
+
+  suspend fun setCandidatesPreselected(candidateIds: List<Long>, preselected: Boolean) {
+    if (candidateIds.isEmpty()) return
+    val entities = candidateIds.chunked(BATCH_PARAM_CHUNK).flatMap { candidateDao.getByIds(it) }
+    val nonDupIds = entities.filter { it.category != Category.DUPLICATE.name }.map { it.id }
+    nonDupIds.chunked(BATCH_PARAM_CHUNK).forEach { chunk ->
+      candidateDao.updatePreselectedByIds(chunk, preselected)
+    }
+
+    val dupEntities = entities.filter { it.category == Category.DUPLICATE.name }
+    if (dupEntities.isNotEmpty()) {
+      val byGroup = dupEntities.groupBy { it.sessionId to it.groupId }
+      for ((key, requested) in byGroup) {
+        val (sessionId, groupId) = key
+        if (groupId.isNullOrBlank()) continue
+        val group = candidateDao.getForGroup(sessionId, groupId).map { it.toDomain() }
+        val desired = requested.associate { it.id to preselected }
+        val adjusted = DuplicateKeepPolicy.enforceKeepAtLeastOneCopy(group, desired)
+        for ((id, targetSelected) in adjusted) {
+          val current = group.firstOrNull { it.id == id }
+          if (current != null && current.candidate.preselected != targetSelected) {
+            candidateDao.updatePreselected(id, targetSelected)
+          }
+        }
+      }
+    }
+  }
+
+  suspend fun swapDuplicateKeptCandidate(
+    sessionId: String,
+    groupId: String,
+    newKeepCandidateId: Long,
+  ) {
+    candidateDao.swapKeptCandidate(
+      sessionId = sessionId,
+      groupId = groupId,
+      newKeepCandidateId = newKeepCandidateId,
+    )
+  }
+
+  suspend fun removeCleanedCandidates(
+    sessionId: String?,
+    candidateIds: List<Long>,
+    now: Long = System.currentTimeMillis(),
+  ) {
+    if (candidateIds.isEmpty()) return
+    val deletedEntities = candidateIds.chunked(BATCH_PARAM_CHUNK).flatMap { candidateDao.getByIds(it) }
+    val affectedDuplicateGroups = deletedEntities
+      .filter { it.category == Category.DUPLICATE.name && !it.groupId.isNullOrBlank() }
+      .map { it.sessionId to it.groupId!! }
+      .distinct()
+
+    candidateIds.chunked(BATCH_PARAM_CHUNK).forEach { chunk ->
+      candidateDao.deleteByIds(chunk)
+    }
+
+    // Se restou apenas 1 cópia em um grupo de duplicados, o grupo foi resolvido e não é mais duplicado
+    val resolvedSoloIds = mutableListOf<Long>()
+    for ((dupSessionId, groupId) in affectedDuplicateGroups) {
+      val remaining = candidateDao.getForGroup(dupSessionId, groupId)
+      if (remaining.size == 1) {
+        resolvedSoloIds.add(remaining.first().id)
+      }
+    }
+    resolvedSoloIds.chunked(BATCH_PARAM_CHUNK).forEach { chunk ->
+      candidateDao.deleteByIds(chunk)
+    }
+
+    if (sessionId != null) {
+      val remaining = candidateDao.countForSession(sessionId)
+      sessionDao.updateCandidatesCount(sessionId = sessionId, candidatesCount = remaining, updatedAt = now)
+    }
+  }
 
   suspend fun getSession(sessionId: String): ScanSession? =
     sessionDao.getSession(sessionId)?.toDomain()
@@ -99,36 +232,55 @@ class ScanRepository(
     candidates: List<Pair<Candidate, String?>>,
     errors: List<WalkError>,
   ) {
-    if (candidates.isNotEmpty()) {
-      candidateDao.insertAll(
-        candidates.map { (candidate, reason) ->
-          ScanCandidateEntity(
-            sessionId = sessionId,
-            path = candidate.path,
-            sizeBytes = candidate.sizeBytes,
-            lastModified = candidate.lastModified,
-            category = candidate.category.name,
-            ruleId = candidate.ruleId,
-            confidence = candidate.confidence.name,
-            groupId = candidate.groupId,
-            preselected = candidate.preselected,
-            reason = reason,
-          )
-        },
-      )
+    appendFoundEventsAndErrors(
+      sessionId = sessionId,
+      foundEvents = candidates.map { (candidate, reason) ->
+        ScanEvent.Found(candidate = candidate, reason = reason, isKept = false)
+      },
+      errors = errors,
+    )
+  }
+
+  suspend fun appendFoundEventsAndErrors(
+    sessionId: String,
+    foundEvents: List<ScanEvent.Found>,
+    errors: List<WalkError>,
+  ) {
+    if (foundEvents.isNotEmpty()) {
+      foundEvents.chunked(BATCH_PARAM_CHUNK).forEach { chunk ->
+        candidateDao.insertAll(
+          chunk.map { found ->
+            ScanCandidateEntity(
+              sessionId = sessionId,
+              path = found.candidate.path,
+              sizeBytes = found.candidate.sizeBytes,
+              lastModified = found.candidate.lastModified,
+              category = found.candidate.category.name,
+              ruleId = found.candidate.ruleId,
+              confidence = found.candidate.confidence.name,
+              groupId = found.candidate.groupId,
+              preselected = found.candidate.preselected,
+              reason = found.reason,
+              isKept = found.isKept,
+            )
+          },
+        )
+      }
     }
     if (errors.isNotEmpty()) {
-      errorDao.insertAll(
-        errors.map { error ->
-          ScanErrorEntity(
-            sessionId = sessionId,
-            path = error.path,
-            errorType = error.errorType,
-            message = error.message,
-            timestamp = error.timestamp,
-          )
-        },
-      )
+      errors.chunked(BATCH_PARAM_CHUNK).forEach { chunk ->
+        errorDao.insertAll(
+          chunk.map { error ->
+            ScanErrorEntity(
+              sessionId = sessionId,
+              path = error.path,
+              errorType = error.errorType,
+              message = error.message,
+              timestamp = error.timestamp,
+            )
+          },
+        )
+      }
     }
   }
 
@@ -258,6 +410,7 @@ class ScanRepository(
       preselected = preselected,
     ),
     reason = reason,
+    isKept = isKept,
   )
 
   private fun ScanErrorEntity.toDomain(): WalkError = WalkError(
@@ -266,4 +419,15 @@ class ScanRepository(
     message = message,
     timestamp = timestamp,
   )
+
+  companion object {
+    private const val BATCH_PARAM_CHUNK = 400
+
+    private fun scopesFor(category: Category): List<String> = when (category) {
+      Category.SUPERFLUOUS -> listOf(ScanScope.SUPERFLUOUS.name, ScanScope.FULL.name)
+      Category.ORPHAN -> listOf(ScanScope.ORPHAN.name, ScanScope.FULL.name)
+      Category.DUPLICATE -> listOf(ScanScope.DUPLICATE.name, ScanScope.FULL.name)
+      Category.WHATSAPP -> listOf(ScanScope.WHATSAPP.name, ScanScope.FULL.name)
+    }
+  }
 }

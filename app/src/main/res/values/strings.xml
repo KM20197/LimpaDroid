@@ -4,7 +4,6 @@
     <!-- Geral -->
     <string name="cd_back">Voltar</string>
     <string name="cd_refresh">Atualizar</string>
-    <string name="cd_copy">Copiar relatório</string>
     <string name="action_retry">Tentar novamente</string>
 
     <!-- Onboarding -->
@@ -48,7 +47,6 @@
     <string name="cat_whatsapp_desc">Imagens, vídeos, áudios e notas de voz (WhatsApp e Business), sem tocar em Status.</string>
 
     <string name="home_trash_title">Lixeira interna (30 dias)</string>
-    <string name="home_trash_desc">Nenhum arquivo é excluído diretamente. Remoção reversível por 30 dias antes do expurgo definitivo.</string>
     <string name="home_trash_warning">A lixeira reside em Documents/LimpaDroid/.lixeira com índice local e metadados de recuperação após reinstalação.</string>
 
     <string name="home_version_format">Versão %1$s (%2$d) · Segure para diagnóstico</string>
@@ -77,6 +75,7 @@
     <string name="diagnostic_exists_no">Ausente</string>
     <string name="diagnostic_sdk_app_format">SDK API %1$d · App %2$s</string>
     <string name="diagnostic_entry_error_format">Erro: %1$s</string>
+    <string name="diagnostic_truncated_notice">(lista truncada)</string>
 
     <!-- Infraestrutura de varredura (Fase 1) -->
     <string name="scan_notification_channel_name">Varredura do armazenamento</string>
@@ -110,4 +109,173 @@
     <string name="scan_screen_checkpoint_label">Subárvores concluídas no ponto de retomada: %1$d</string>
     <string name="scan_screen_errors_title">Erros de leitura registrados (%1$d)</string>
     <string name="scan_screen_errors_empty">Nenhum erro de leitura registrado nesta sessão.</string>
+
+    <!-- Lixeira e Histórico (Fase 2) -->
+    <string name="home_trash_metrics_format">Em lixeira: %1$s (%2$d) · A expirar: %3$d</string>
+    <string name="home_trash_freed_format">Espaço efetivamente liberado: %1$s</string>
+    <string name="home_open_trash">Abrir lixeira</string>
+    <string name="home_open_history">Histórico</string>
+
+    <string name="trash_screen_title">Lixeira interna</string>
+    <string name="trash_empty_all_button">Esvaziar lixeira</string>
+    <string name="trash_in_trash_label">Em lixeira</string>
+    <string name="trash_freed_label">Espaço efetivamente liberado</string>
+    <string name="trash_expiring_soon_format">%1$d item(ns) expira(m) em até 3 dias</string>
+    <string name="trash_accounting_notice">Mover itens para a lixeira não libera espaço imediatamente; a liberação ocorre somente no expurgo após 30 dias ou na exclusão definitiva. A lixeira reside em Documents/LimpaDroid/.lixeira.</string>
+    <string name="trash_empty_state_title">Lixeira vazia</string>
+    <string name="trash_empty_state_desc">Nenhum arquivo aguarda expiração na lixeira interna.</string>
+    <string name="trash_deleted_at_format">Removido em: %1$s</string>
+    <string name="trash_remaining_days_format">Dias restantes: %1$d</string>
+    <string name="trash_restore_button">Restaurar</string>
+    <string name="trash_delete_forever_button">Excluir definitivamente</string>
+    <string name="trash_confirm_cancel">Cancelar</string>
+    <string name="trash_confirm_restore_title">Restaurar item</string>
+    <string name="trash_confirm_restore_body">O item será movido de volta ao caminho original (%1$s). Se o destino já estiver ocupado, será adicionado o sufixo (restaurado).</string>
+    <string name="trash_confirm_restore_action">Confirmar restauração</string>
+    <string name="trash_confirm_delete_title">Excluir definitivamente</string>
+    <string name="trash_confirm_delete_body">Esta ação remove %1$s (%2$s) de forma irreversível e libera espaço no armazenamento.</string>
+    <string name="trash_confirm_delete_action">Excluir definitivamente</string>
+    <string name="trash_confirm_empty_title">Esvaziar toda a lixeira</string>
+    <string name="trash_confirm_empty_body">Todos os %1$d item(ns) (%2$s) serão removidos de forma irreversível do dispositivo.</string>
+    <string name="trash_confirm_empty_action">Esvaziar lixeira</string>
+    <string name="trash_restored_feedback">Item restaurado em: %1$s</string>
+    <string name="trash_purged_feedback">Exclusão definitiva concluída (%1$s liberados).</string>
+    <string name="trash_emptied_feedback">Lixeira esvaziada (%1$d item(ns), %2$s liberados).</string>
+
+    <string name="history_screen_title">Histórico de operações</string>
+    <string name="history_empty_state">Nenhuma operação de movimentação, restauração ou expurgo registrada até o momento.</string>
+    <string name="history_op_move">Movido para a lixeira</string>
+    <string name="history_op_restore">Restaurado da lixeira</string>
+    <string name="history_op_purge_expired">Expurgo automático (30 dias)</string>
+    <string name="history_op_purge_manual">Exclusão definitiva</string>
+    <string name="history_op_empty_trash">Esvaziamento da lixeira</string>
+    <string name="history_op_mediastore_repair">Atualização do MediaStore</string>
+    <string name="history_category_general">Geral</string>
+    <string name="history_item_meta_format">%1$d item(ns) · %2$s · %3$s</string>
+
+    <!-- Dados supérfluos e Configurações (Fase 3) -->
+    <string name="home_category_metrics_format">%1$d candidato(s) · %2$s</string>
+    <string name="home_view_results_button">Ver resultados</string>
+
+    <string name="results_analyze_action">Analisar</string>
+    <string name="results_selected_summary_format">%1$d selecionado(s) · %2$s</string>
+    <string name="results_mediastore_no_trash_hint">Registros ausentes do MediaStore não passam pela lixeira.</string>
+    <string name="results_repair_mediastore_button">Atualizar índice</string>
+    <string name="results_move_to_trash_button">Mover para a lixeira</string>
+    <string name="results_scanning_in_progress">Varredura em andamento…</string>
+    <string name="results_never_scanned_title">Análise ainda não executada</string>
+    <string name="results_never_scanned_desc">Toque em Analisar para localizar candidatos desta categoria no armazenamento compartilhado.</string>
+    <string name="results_empty_title">Nenhum candidato encontrado</string>
+    <string name="results_empty_desc">Nenhum item ativo corresponde às regras habilitadas para esta categoria.</string>
+    <string name="results_group_stats_format">%1$d item(ns) · %2$s</string>
+    <string name="results_select_all">Selecionar grupo</string>
+    <string name="results_unselect_all">Desmarcar grupo</string>
+    <string name="cd_candidate_preview">Miniatura do arquivo</string>
+    <string name="confidence_high">Alta</string>
+    <string name="confidence_medium">Média</string>
+    <string name="confidence_low">Baixa</string>
+    <string name="results_confirm_title">Confirmar limpeza</string>
+    <string name="results_confirm_mixed_body">%1$d item(ns) (%2$s) serão movidos para a lixeira interna com retenção de 30 dias. Além disso, %3$d registro(s) ausente(s) do MediaStore serão atualizados diretamente, sem passar pela lixeira.</string>
+    <string name="results_confirm_trash_body">%1$d item(ns) (%2$s) serão movidos para a lixeira interna e mantidos por 30 dias antes da exclusão definitiva.</string>
+    <string name="results_confirm_mediastore_body">%1$d registro(s) do MediaStore sem arquivo correspondente em disco serão atualizados via MediaScanner, sem uso da lixeira.</string>
+    <string name="results_confirm_action">Confirmar</string>
+    <string name="results_feedback_cleanup_done">%1$d item(ns) movido(s) para a lixeira (%2$s).</string>
+    <string name="results_feedback_mediastore_only">%1$d registro(s) do MediaStore atualizado(s).</string>
+    <string name="results_feedback_skipped_suffix">%1$d item(ns) ignorado(s) ou com falha na revalidação.</string>
+
+    <string name="rule_thumbs_title">Miniaturas em cache (.thumbnails)</string>
+    <string name="rule_thumbs_desc">Arquivos em pastas .thumbnails dentro de DCIM e Pictures.</string>
+    <string name="rule_partial_dl_title">Downloads incompletos</string>
+    <string name="rule_partial_dl_desc">Arquivos .crdownload, .part, .partial, .download e .tmp em Download modificados há mais de 7 dias.</string>
+    <string name="rule_lost_dir_title">Resíduos em LOST.DIR</string>
+    <string name="rule_lost_dir_desc">Fragmentos de recuperação armazenados na pasta LOST.DIR.</string>
+    <string name="rule_empty_dir_title">Diretórios vazios</string>
+    <string name="rule_empty_dir_desc">Pastas sem descendentes, preservando pastas-raiz padrão e diretórios com .nomedia.</string>
+    <string name="rule_zero_byte_title">Arquivos vazios (0 B)</string>
+    <string name="rule_zero_byte_desc">Arquivos regulares de 0 byte, exceto .nomedia e nomes iniciados por ponto.</string>
+    <string name="rule_old_apk_title">Instaladores APK em Download</string>
+    <string name="rule_old_apk_desc">Pacotes .apk, .xapk e .apks mantidos na pasta Download.</string>
+    <string name="rule_stale_mediastore_title">Registros órfãos no MediaStore</string>
+    <string name="rule_stale_mediastore_desc">Entradas indexadas cujo arquivo não existe mais; atualizadas diretamente sem lixeira.</string>
+    <string name="rule_orphan_media_pkg_title">Pacote ausente em Android/media</string>
+    <string name="rule_orphan_media_pkg_desc">Subpasta em Android/media cujo identificador de pacote não está entre aplicativos instalados ou arquivados.</string>
+    <string name="rule_orphan_root_known_title">Pasta de aplicativo removido no histórico</string>
+    <string name="rule_orphan_root_known_desc">Pasta na raiz ou em diretórios compartilhados compatível com aplicativo anteriormente instalado e já removido.</string>
+    <string name="rule_orphan_root_pattern_title">Pasta com formato de pacote na raiz</string>
+    <string name="rule_orphan_root_pattern_desc">Diretório na raiz cujo nome segue padrão de pacote e não corresponde a nenhum aplicativo presente.</string>
+    <string name="rule_duplicate_priority_title">Duplicados com pasta de prioridade</string>
+    <string name="rule_duplicate_priority_desc">Arquivos idênticos por SHA-256 em que uma cópia reside em pasta de prioridade configurada.</string>
+    <string name="rule_duplicate_no_priority_title">Duplicados sem pasta de prioridade</string>
+    <string name="rule_duplicate_no_priority_desc">Arquivos idênticos por SHA-256 fora de pastas de prioridade; revise a cópia preservada antes de mover.</string>
+    <string name="rule_whatsapp_images_title">Imagens do WhatsApp</string>
+    <string name="rule_whatsapp_images_desc">Arquivos em WhatsApp Images e WhatsApp Business Images (incluindo Sent) acima da idade mínima configurada.</string>
+    <string name="rule_whatsapp_video_title">Vídeos do WhatsApp</string>
+    <string name="rule_whatsapp_video_desc">Arquivos em WhatsApp Video e WhatsApp Business Video (incluindo Sent) acima da idade mínima configurada.</string>
+    <string name="rule_whatsapp_audio_title">Áudios do WhatsApp</string>
+    <string name="rule_whatsapp_audio_desc">Arquivos em WhatsApp Audio e WhatsApp Business Audio (incluindo Sent) acima da idade mínima configurada.</string>
+    <string name="rule_whatsapp_voice_notes_title">Notas de voz do WhatsApp</string>
+    <string name="rule_whatsapp_voice_notes_desc">Gravações em WhatsApp Voice Notes (incluindo subpastas semanais) acima da idade mínima configurada.</string>
+    <string name="rule_whatsapp_animated_gifs_title">GIFs animados do WhatsApp</string>
+    <string name="rule_whatsapp_animated_gifs_desc">Arquivos em WhatsApp Animated Gifs (subpasta opcional desativada por padrão).</string>
+    <string name="rule_unknown_title">Regra de limpeza</string>
+    <string name="rule_unknown_desc">Candidato identificado por regra de varredura local.</string>
+
+    <!-- Duplicados (Fase 5) -->
+    <string name="results_duplicate_group_title_format">Grupo de %1$s · %2$d cópias</string>
+    <string name="results_duplicate_reclaimable_format">%1$s recuperáveis · %2$d excedente(s)</string>
+    <string name="results_duplicate_no_priority_badge">Sem pasta de prioridade</string>
+    <string name="results_duplicate_kept_badge">Preservada</string>
+    <string name="results_duplicate_keep_action">Preservar esta</string>
+    <string name="results_duplicate_select_excess">Selecionar excedentes</string>
+    <string name="results_duplicate_unselect_excess">Desmarcar excedentes</string>
+
+    <!-- WhatsApp (Fase 6) -->
+    <string name="results_whatsapp_warning_banner">Arquivos removidos deixam de aparecer no WhatsApp até serem restaurados da lixeira; o WhatsApp só os recupera se houver cópia na nuvem do próprio aplicativo.</string>
+    <string name="results_whatsapp_confirm_note">Aviso: arquivos removidos deixam de aparecer no WhatsApp até serem restaurados da lixeira.</string>
+    <string name="results_whatsapp_filter_summary_format">Idade mínima ativa: %1$d dias · Status, backups, documentos e figurinhas nunca são tocados.</string>
+    <string name="results_whatsapp_auto_preselect_title">Pré-selecionar nas próximas análises</string>
+    <string name="results_whatsapp_auto_preselect_desc">Na primeira execução os itens vêm desmarcados por segurança; sua escolha fica salva para futuras varreduras.</string>
+
+    <string name="settings_title">Configurações</string>
+    <string name="settings_superfluous_section">Regras de dados supérfluos</string>
+    <string name="settings_duplicate_section">Arquivos duplicados</string>
+    <string name="settings_duplicate_min_size_title">Tamanho mínimo para duplicados</string>
+    <string name="settings_duplicate_min_size_desc">Arquivos menores que o limite configurado não entram na análise de duplicados.</string>
+    <string name="settings_duplicate_priority_title">Pastas de prioridade (ordem de preservação)</string>
+    <string name="settings_duplicate_priority_desc">A cópia localizada na pasta de menor índice permanece preservada fora da lixeira.</string>
+    <string name="settings_duplicate_reset_folders">Restaurar padrão</string>
+    <string name="settings_duplicate_priority_empty">Nenhuma pasta de prioridade cadastrada. Grupos serão marcados para revisão manual.</string>
+    <string name="settings_duplicate_add_folder_title">Adicionar pasta de prioridade</string>
+    <string name="settings_duplicate_add_folder_desc">Informe o caminho relativo ao armazenamento interno compartilhado (exemplo: DCIM/Camera).</string>
+    <string name="settings_duplicate_add_folder_hint">Pasta relativa</string>
+    <string name="settings_duplicate_move_up_cd">Subir prioridade</string>
+    <string name="settings_duplicate_move_down_cd">Descer prioridade</string>
+    <string name="settings_duplicate_remove_folder_cd">Remover pasta de prioridade</string>
+    <string name="settings_whatsapp_section">Mídia do WhatsApp</string>
+    <string name="settings_whatsapp_min_age_title_format">Idade mínima da mídia: %1$d dias</string>
+    <string name="settings_whatsapp_min_age_desc">Apenas arquivos modificados há pelo menos este número de dias (7 a 730) entram na análise.</string>
+    <string name="settings_whatsapp_age_chip_format">%1$d d</string>
+    <string name="settings_whatsapp_age_slider_cd">Idade mínima da mídia do WhatsApp em dias</string>
+    <string name="settings_whatsapp_types_title">Tipos de mídia incluídos</string>
+    <string name="settings_whatsapp_types_desc">Status (.Statuses), Backups, Databases, Documents e Stickers permanecem fora do escopo.</string>
+    <string name="settings_whatsapp_auto_preselect_title">Pré-selecionar mídias antigas</string>
+    <string name="settings_whatsapp_auto_preselect_desc">Lembra a marcação automática para itens elegíveis nas próximas análises do WhatsApp.</string>
+    <string name="settings_whatsapp_type_images_label">Imagens</string>
+    <string name="settings_whatsapp_type_images_desc">WhatsApp Images e WhatsApp Business Images (inclui Sent)</string>
+    <string name="settings_whatsapp_type_video_label">Vídeos</string>
+    <string name="settings_whatsapp_type_video_desc">WhatsApp Video e WhatsApp Business Video (inclui Sent)</string>
+    <string name="settings_whatsapp_type_audio_label">Áudios</string>
+    <string name="settings_whatsapp_type_audio_desc">WhatsApp Audio e WhatsApp Business Audio (inclui Sent)</string>
+    <string name="settings_whatsapp_type_voice_notes_label">Notas de voz</string>
+    <string name="settings_whatsapp_type_voice_notes_desc">WhatsApp Voice Notes e pastas semanais</string>
+    <string name="settings_whatsapp_type_animated_gifs_label">GIFs animados (opcional)</string>
+    <string name="settings_whatsapp_type_animated_gifs_desc">WhatsApp Animated Gifs — desativado por padrão</string>
+    <string name="settings_exclusions_section">Pastas e caminhos protegidos</string>
+    <string name="settings_add_exclusion">Adicionar</string>
+    <string name="settings_exclusions_empty">Nenhuma exceção personalizada cadastrada. Caminhos listados aqui nunca são sugeridos ou movidos.</string>
+    <string name="settings_remove_exclusion_cd">Remover exceção</string>
+    <string name="settings_add_exclusion_title">Adicionar exceção</string>
+    <string name="settings_add_exclusion_desc">Informe o caminho completo no armazenamento interno compartilhado que deve ser ignorado em todas as varreduras e limpezas.</string>
+    <string name="settings_add_exclusion_hint">Caminho completo</string>
+    <string name="settings_exclusion_save">Salvar</string>
 </resources>

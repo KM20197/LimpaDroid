@@ -1,0 +1,135 @@
+name: Release APK (Signed)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, Verify & Publish Signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate release signing secrets
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -z "${RELEASE_KEYSTORE_BASE64}" ] && missing+=("RELEASE_KEYSTORE_BASE64")
+          [ -z "${KEY_ALIAS}" ] && missing+=("KEY_ALIAS")
+          [ -z "${STORE_PASSWORD}" ] && missing+=("STORE_PASSWORD")
+          [ -z "${KEY_PASSWORD}" ] && missing+=("KEY_PASSWORD")
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Secrets de assinatura ausentes: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK (API 37)
+        uses: android-actions/setup-android@v4.0.4
+
+      - name: Install Android 17 SDK Platform & Build Tools
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --channel=3 --licenses > /dev/null || true
+          sdkmanager --channel=3 \
+            "platforms;android-37.0" \
+            "build-tools;36.0.0"
+
+      - name: Set up Gradle Cache
+        uses: gradle/actions/setup-gradle@v6.4.1
+
+      - name: Restore release keystore and derive tag metadata
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="${RUNNER_TEMP}/limpadroid-release.jks"
+          printf '%s' "${RELEASE_KEYSTORE_BASE64}" | tr -d '\n\r ' | base64 --decode > "${KEYSTORE_PATH}"
+
+          if [ "${KEY_ALIAS}" != "upload" ]; then
+            keytool -changealias \
+              -keystore "${KEYSTORE_PATH}" \
+              -alias "${KEY_ALIAS}" \
+              -destalias upload \
+              -storepass "${STORE_PASSWORD}" \
+              -keypass "${KEY_PASSWORD}"
+          fi
+
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          fi
+
+          VERSION_NAME="${GITHUB_REF_NAME#v}"
+          echo "KEYSTORE_PATH=${KEYSTORE_PATH}" >> "${GITHUB_ENV}"
+          echo "VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "${GITHUB_ENV}"
+          chmod +x gradlew
+
+      - name: Run Lint, Unit Tests & Assemble Signed Release APK
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          VERSION_CODE: ${{ env.VERSION_CODE }}
+          VERSION_NAME: ${{ env.VERSION_NAME }}
+        run: ./gradlew lint testDebugUnitTest assembleRelease --stacktrace
+
+      - name: Verify APK signature with apksigner and compute SHA-256
+        run: |
+          set -euo pipefail
+          RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "${RELEASE_APK}" ]; then
+            echo "::error::APK de release não encontrado em ${RELEASE_APK}"
+            exit 1
+          fi
+          TARGET_APK="limpadroid-${VERSION_NAME}-release.apk"
+          cp "${RELEASE_APK}" "${TARGET_APK}"
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${TARGET_APK}"
+          sha256sum "${TARGET_APK}" > "${TARGET_APK}.sha256"
+          echo "RELEASE_ASSET_APK=${TARGET_APK}" >> "${GITHUB_ENV}"
+          echo "RELEASE_ASSET_SHA256=${TARGET_APK}.sha256" >> "${GITHUB_ENV}"
+
+      - name: Clean up temporary release keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/limpadroid-release.jks" debug.keystore
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.RELEASE_ASSET_APK }}
+            ${{ env.RELEASE_ASSET_SHA256 }}

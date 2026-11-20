@@ -5,6 +5,7 @@ import io.github.km20197.limpadroid.domain.model.DiagnosticEntry
 import io.github.km20197.limpadroid.domain.model.DiagnosticReport
 import io.github.km20197.limpadroid.domain.model.WhatsAppRootStatus
 import java.io.IOException
+import java.nio.file.DirectoryIteratorException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -35,52 +36,86 @@ class DirectoryInspector(
       )
     }
 
-    return try {
-      val subFolders = mutableListOf<String>()
+    val subFolders = mutableListOf<String>()
+    var encounteredError = false
+    try {
       Files.newDirectoryStream(rootDir).use { stream ->
-        for (entry in stream) {
+        val iterator = stream.iterator()
+        while (true) {
+          val entry = try {
+            if (!iterator.hasNext()) break
+            iterator.next()
+          } catch (_: DirectoryIteratorException) {
+            encounteredError = true
+            break
+          }
           val attrs = try {
             Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
           } catch (_: IOException) {
+            encounteredError = true
+            null
+          } catch (_: SecurityException) {
+            encounteredError = true
             null
           }
           if (attrs != null && attrs.isDirectory && !attrs.isSymbolicLink) {
             subFolders.add(entry.fileName?.toString().orEmpty())
           }
-          if (subFolders.size >= maxEntriesPerLevel) break
         }
       }
-      subFolders.sort()
-      WhatsAppRootStatus(
-        label = label,
-        path = rootDir.toString(),
-        exists = true,
-        readable = true,
-        subFolders = subFolders,
-      )
+    } catch (_: DirectoryIteratorException) {
+      encounteredError = true
     } catch (_: IOException) {
-      WhatsAppRootStatus(
+      return WhatsAppRootStatus(
         label = label,
         path = rootDir.toString(),
         exists = true,
         readable = false,
       )
     } catch (_: SecurityException) {
-      WhatsAppRootStatus(
+      return WhatsAppRootStatus(
         label = label,
         path = rootDir.toString(),
         exists = true,
         readable = false,
       )
     }
+
+    val sorted = subFolders.sorted()
+    val truncated = sorted.size > maxEntriesPerLevel
+    return WhatsAppRootStatus(
+      label = label,
+      path = rootDir.toString(),
+      exists = true,
+      readable = !encounteredError || sorted.isNotEmpty(),
+      subFolders = if (truncated) sorted.take(maxEntriesPerLevel) else sorted,
+      truncated = truncated,
+    )
   }
 
   private fun readDirectoryChildren(dir: Path, remainingDepth: Int): List<DiagnosticEntry> {
     val entries = mutableListOf<DiagnosticEntry>()
     try {
       Files.newDirectoryStream(dir).use { stream ->
-        for (child in stream) {
-          if (entries.size >= maxEntriesPerLevel) break
+        val iterator = stream.iterator()
+        while (true) {
+          val child = try {
+            if (!iterator.hasNext()) break
+            iterator.next()
+          } catch (e: DirectoryIteratorException) {
+            val cause = e.cause ?: e
+            entries.add(
+              DiagnosticEntry(
+                name = dir.fileName?.toString() ?: dir.toString(),
+                path = "${dir}/__iter_error_${entries.size}",
+                isDirectory = false,
+                sizeBytes = 0L,
+                error = "${cause.javaClass.simpleName}: ${cause.message.orEmpty()}",
+              ),
+            )
+            break
+          }
+
           val name = child.fileName?.toString() ?: child.toString()
           val attrs = try {
             Files.readAttributes(child, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
@@ -129,6 +164,17 @@ class DirectoryInspector(
           )
         }
       }
+    } catch (e: DirectoryIteratorException) {
+      val cause = e.cause ?: e
+      entries.add(
+        DiagnosticEntry(
+          name = dir.fileName?.toString() ?: dir.toString(),
+          path = "${dir}/__dir_iter_error",
+          isDirectory = true,
+          sizeBytes = 0L,
+          error = "${cause.javaClass.simpleName}: ${cause.message.orEmpty()}",
+        ),
+      )
     } catch (e: IOException) {
       return listOf(
         DiagnosticEntry(
@@ -151,8 +197,18 @@ class DirectoryInspector(
       )
     }
 
-    return entries.sortedWith(
+    val sorted = entries.sortedWith(
       compareByDescending<DiagnosticEntry> { it.isDirectory }.thenBy { it.name.lowercase() },
+    )
+    if (sorted.size <= maxEntriesPerLevel) {
+      return sorted
+    }
+    return sorted.take(maxEntriesPerLevel) + DiagnosticEntry(
+      name = "(lista truncada — exibindo $maxEntriesPerLevel de ${sorted.size} entradas)",
+      path = "${dir}/__truncated__",
+      isDirectory = false,
+      sizeBytes = 0L,
+      isTruncationNotice = true,
     )
   }
 
@@ -181,6 +237,9 @@ class DirectoryInspector(
         for (sub in wa.subFolders) {
           appendLine("    - $sub")
         }
+        if (wa.truncated) {
+          appendLine("    - (lista truncada)")
+        }
       }
       appendLine()
       appendLine("--- Android/media (2 níveis) ---")
@@ -200,11 +259,19 @@ class DirectoryInspector(
 
     private fun StringBuilder.appendEntries(entries: List<DiagnosticEntry>) {
       for (entry in entries) {
+        if (entry.isTruncationNotice) {
+          appendLine("(lista truncada)")
+          continue
+        }
         val marker = if (entry.isDirectory) "[D]" else "[F]"
         val sizeSuffix = if (entry.isDirectory) "" else " (${ByteFormatter.format(entry.sizeBytes)})"
         val errorSuffix = entry.error?.let { " [erro: $it]" }.orEmpty()
         appendLine("$marker ${entry.name}$sizeSuffix$errorSuffix")
         for (child in entry.children) {
+          if (child.isTruncationNotice) {
+            appendLine("  (lista truncada)")
+            continue
+          }
           val childMarker = if (child.isDirectory) "[D]" else "[F]"
           val childSize = if (child.isDirectory) "" else " (${ByteFormatter.format(child.sizeBytes)})"
           val childError = child.error?.let { " [erro: $it]" }.orEmpty()

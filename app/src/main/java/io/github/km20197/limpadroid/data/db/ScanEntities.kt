@@ -52,6 +52,7 @@ data class ScanCandidateEntity(
   val groupId: String?,
   val preselected: Boolean,
   val reason: String?,
+  val isKept: Boolean = false,
 )
 
 @Entity(

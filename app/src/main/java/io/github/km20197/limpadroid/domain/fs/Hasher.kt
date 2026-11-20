@@ -50,7 +50,8 @@ object Hasher {
       digest.update(sizeBytes)
 
       if (size <= PARTIAL_WINDOW_BYTES * 2L) {
-        val buf = ByteBuffer.allocate(PARTIAL_WINDOW_BYTES)
+        val capacity = size.toInt().coerceIn(1, PARTIAL_WINDOW_BYTES)
+        val buf = ByteBuffer.allocate(capacity)
         while (true) {
           coroutineContext.ensureActive()
           buf.clear()

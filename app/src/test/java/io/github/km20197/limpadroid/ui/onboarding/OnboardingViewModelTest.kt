@@ -94,9 +94,34 @@ class OnboardingViewModelTest {
 
   private class FakePreferences : AppPreferencesRepository {
     private val flow = MutableStateFlow(false)
+    private val rulesFlow = MutableStateFlow(
+      io.github.km20197.limpadroid.domain.scan.rules.SuperfluousRuleId.DEFAULT_ENABLED_IDS,
+    )
+    private val exclusionsFlow = MutableStateFlow<Set<String>>(emptySet())
+
     override val notificationPromptHandled: Flow<Boolean> = flow
+    override val enabledSuperfluousRuleIds: Flow<Set<String>> = rulesFlow
+    override val userExcludedPaths: Flow<Set<String>> = exclusionsFlow
+
     override suspend fun setNotificationPromptHandled(handled: Boolean) {
       flow.value = handled
+    }
+
+    override suspend fun setSuperfluousRuleEnabled(ruleId: String, enabled: Boolean) {
+      val updated = rulesFlow.value.toMutableSet()
+      if (enabled) updated.add(ruleId) else updated.remove(ruleId)
+      rulesFlow.value = updated
+    }
+
+    override suspend fun addUserExcludedPath(path: String) {
+      val trimmed = path.trim()
+      if (trimmed.isNotEmpty()) {
+        exclusionsFlow.value = exclusionsFlow.value + trimmed
+      }
+    }
+
+    override suspend fun removeUserExcludedPath(path: String) {
+      exclusionsFlow.value = exclusionsFlow.value - path
     }
   }
 }

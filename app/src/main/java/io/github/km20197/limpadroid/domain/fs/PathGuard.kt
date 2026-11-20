@@ -24,6 +24,7 @@ interface PathGuard {
   val storageRoot: Path
   fun isAllowed(path: Path): Boolean
   fun isTraversalAllowed(path: Path): Boolean
+  fun hasProtectedDescendant(dir: Path): Boolean
   fun validate(path: Path, allowRoot: Boolean = false): PathGuardResult
   fun fixedExclusions(): List<Path>
 }
@@ -44,7 +45,9 @@ class DefaultPathGuard(
   )
 
   private val normalizedUserExclusions: List<List<String>> = userExcludedPaths.mapNotNull { excluded ->
-    val resolved = resolveNonSymlinkForConfig(excluded) ?: return@mapNotNull null
+    if (excluded.toString().isBlank() || containsParentTraversal(excluded)) return@mapNotNull null
+    val candidate = if (excluded.isAbsolute) excluded else storageRoot.resolve(excluded)
+    val resolved = resolveNonSymlinkForConfig(candidate) ?: return@mapNotNull null
     if (!resolved.startsWith(storageRoot) || resolved == storageRoot) return@mapNotNull null
     storageRoot.relativize(resolved).map { it.toString() }.takeIf { it.isNotEmpty() }
   }
@@ -58,6 +61,25 @@ class DefaultPathGuard(
 
   override fun isTraversalAllowed(path: Path): Boolean =
     validate(path, allowRoot = true) is PathGuardResult.Allowed
+
+  override fun hasProtectedDescendant(dir: Path): Boolean {
+    val allowed = validate(dir, allowRoot = true) as? PathGuardResult.Allowed ?: return true
+    val resolved = allowed.resolvedPath
+    val dirSegments = if (resolved == storageRoot) {
+      emptyList()
+    } else {
+      storageRoot.relativize(resolved).map { it.toString() }
+    }
+    if (fixedExclusionRelatives.any { prefix ->
+        prefix.size >= dirSegments.size && startsWithSegmentsIgnoreCase(prefix, dirSegments)
+      }
+    ) {
+      return true
+    }
+    return normalizedUserExclusions.any { prefix ->
+      prefix.size >= dirSegments.size && startsWithSegmentsIgnoreCase(prefix, dirSegments)
+    }
+  }
 
   override fun validate(path: Path, allowRoot: Boolean): PathGuardResult {
     val rawString = path.toString()

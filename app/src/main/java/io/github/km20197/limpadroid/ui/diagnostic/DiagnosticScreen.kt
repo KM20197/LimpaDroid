@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,6 +48,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.km20197.limpadroid.R
@@ -80,7 +83,9 @@ fun DiagnosticScreen(
         navigationIcon = {
           IconButton(
             onClick = onNavigateBack,
-            modifier = Modifier.testTag("diagnostic_back_button"),
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("diagnostic_back_button"),
           ) {
             Icon(
               imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -108,7 +113,7 @@ fun DiagnosticScreen(
             ) {
               Icon(
                 imageVector = Icons.Filled.ContentCopy,
-                contentDescription = stringResource(R.string.cd_copy),
+                contentDescription = null,
                 modifier = Modifier.padding(end = 6.dp),
               )
               Text(stringResource(R.string.diagnostic_copy_button))
@@ -116,7 +121,9 @@ fun DiagnosticScreen(
           }
           IconButton(
             onClick = { viewModel.refresh() },
-            modifier = Modifier.testTag("diagnostic_refresh_button"),
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("diagnostic_refresh_button"),
           ) {
             Icon(
               imageVector = Icons.Filled.Refresh,
@@ -165,7 +172,10 @@ fun DiagnosticScreen(
               style = MaterialTheme.typography.bodyLarge,
               color = MaterialTheme.colorScheme.error,
             )
-            Button(onClick = { viewModel.refresh() }) {
+            Button(
+              onClick = { viewModel.refresh() },
+              modifier = Modifier.heightIn(min = 48.dp),
+            ) {
               Text(stringResource(R.string.action_retry))
             }
           }
@@ -354,6 +364,13 @@ private fun WhatsAppRootCard(rootStatus: WhatsAppRootStatus) {
             style = MonoPathTextStyle,
           )
         }
+        if (rootStatus.truncated) {
+          Text(
+            text = stringResource(R.string.diagnostic_truncated_notice),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
       }
     }
   }
@@ -388,7 +405,7 @@ private fun DiagnosticEntryCard(entry: DiagnosticEntry) {
           style = MaterialTheme.typography.labelLarge,
           modifier = Modifier.weight(1f),
         )
-        if (!entry.isDirectory) {
+        if (!entry.isDirectory && !entry.isTruncationNotice) {
           Text(
             text = ByteFormatter.format(entry.sizeBytes),
             style = MonoPathTextStyle,
@@ -406,13 +423,21 @@ private fun DiagnosticEntryCard(entry: DiagnosticEntry) {
       if (entry.children.isNotEmpty()) {
         HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
         entry.children.forEach { child ->
-          val suffix = if (child.isDirectory) "/" else " (${ByteFormatter.format(child.sizeBytes)})"
-          val err = child.error?.let { " [erro: $it]" }.orEmpty()
-          Text(
-            text = "  ${child.name}$suffix$err",
-            style = MonoPathTextStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
+          if (child.isTruncationNotice) {
+            Text(
+              text = "  ${child.name}",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          } else {
+            val suffix = if (child.isDirectory) "/" else " (${ByteFormatter.format(child.sizeBytes)})"
+            val err = child.error?.let { " [erro: $it]" }.orEmpty()
+            Text(
+              text = "  ${child.name}$suffix$err",
+              style = MonoPathTextStyle,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
         }
       }
     }
@@ -425,7 +450,9 @@ private fun SectionHeader(title: String) {
     text = title,
     style = MaterialTheme.typography.titleMedium,
     color = MaterialTheme.colorScheme.primary,
-    modifier = Modifier.padding(top = 6.dp),
+    modifier = Modifier
+      .padding(top = 6.dp)
+      .semantics { heading() },
   )
 }
 

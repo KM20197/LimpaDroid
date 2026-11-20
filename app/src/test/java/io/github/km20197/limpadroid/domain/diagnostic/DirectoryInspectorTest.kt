@@ -64,15 +64,45 @@ class DirectoryInspectorTest {
   }
 
   @Test
-  fun `inspectWhatsAppRoot detects existing folders and missing root`() {
-    val root = tempFolder.newFolder("wa").toPath()
-    Files.createDirectory(root.resolve("WhatsApp Images"))
-    Files.createDirectory(root.resolve("WhatsApp Video"))
+  fun `inspectTwoLevels sorts before truncating and emits truncation notice`() {
+    val limitedInspector = DirectoryInspector(maxEntriesPerLevel = 2)
+    val root = tempFolder.newFolder("sorted_trunc").toPath()
+    Files.writeString(root.resolve("zeta.txt"), "z")
+    Files.writeString(root.resolve("alpha.txt"), "a")
+    Files.createDirectory(root.resolve("BetaDir"))
 
-    val present = inspector.inspectWhatsAppRoot("WhatsApp", root)
-    assertTrue(present.exists)
-    assertTrue(present.readable)
-    assertEquals(listOf("WhatsApp Images", "WhatsApp Video"), present.subFolders)
+    val entries = limitedInspector.inspectTwoLevels(root)
+    assertEquals(3, entries.size)
+    assertEquals("BetaDir", entries[0].name)
+    assertEquals("alpha.txt", entries[1].name)
+    assertTrue(entries[2].isTruncationNotice)
+
+    val report = DiagnosticReport(
+      storageRoot = root.toString(),
+      hasAllFilesAccess = true,
+      androidMediaAccessible = false,
+      rootEntries = entries,
+      androidMediaEntries = emptyList(),
+      whatsappKnownRoots = emptyList(),
+      generatedAtIso = "2026-11-17T00:00:00Z",
+      appVersion = "0.1.0 (1)",
+      sdkInt = 37,
+    )
+    assertTrue(DirectoryInspector.formatReportAsText(report).contains("(lista truncada)"))
+  }
+
+  @Test
+  fun `inspectWhatsAppRoot detects existing folders and signals truncation`() {
+    val root = tempFolder.newFolder("wa").toPath()
+    Files.createDirectory(root.resolve("WhatsApp Video"))
+    Files.createDirectory(root.resolve("WhatsApp Images"))
+    Files.createDirectory(root.resolve("WhatsApp Audio"))
+
+    val limited = DirectoryInspector(maxEntriesPerLevel = 2).inspectWhatsAppRoot("WhatsApp", root)
+    assertTrue(limited.exists)
+    assertTrue(limited.readable)
+    assertTrue(limited.truncated)
+    assertEquals(listOf("WhatsApp Audio", "WhatsApp Images"), limited.subFolders)
 
     val absent = inspector.inspectWhatsAppRoot("Business", root.resolve("Missing"))
     assertFalse(absent.exists)

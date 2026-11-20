@@ -10,6 +10,9 @@ import io.github.km20197.limpadroid.data.fs.StorageRootResolution
 import io.github.km20197.limpadroid.data.fs.StorageVolumeResolver
 import io.github.km20197.limpadroid.data.log.ScanLogger
 import io.github.km20197.limpadroid.data.scan.ScanRepository
+import io.github.km20197.limpadroid.domain.model.Category
+import io.github.km20197.limpadroid.domain.model.CategorySummary
+import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
 import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanSession
 import io.github.km20197.limpadroid.domain.model.ScanStatus
@@ -17,6 +20,7 @@ import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
 
 sealed interface ScanStartResult {
@@ -29,6 +33,16 @@ interface ScanController {
   val latestSession: Flow<ScanSession?>
   fun observeSession(sessionId: String): Flow<ScanSession?>
   fun observeRecentErrors(sessionId: String): Flow<List<WalkError>>
+  fun observeCategorySummary(category: Category): Flow<CategorySummary> =
+    flowOf(CategorySummary(category))
+  fun observeCategoryCandidates(category: Category): Flow<List<ScanCandidateRecord>> =
+    flowOf(emptyList())
+  fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
+    flowOf(null)
+  suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) = Unit
+  suspend fun setCandidatesPreselected(candidateIds: List<Long>, preselected: Boolean) = Unit
+  suspend fun swapDuplicateKeptCandidate(sessionId: String, groupId: String, newKeepCandidateId: Long) = Unit
+  suspend fun removeCleanedCandidates(sessionId: String?, candidateIds: List<Long>) = Unit
   suspend fun reconcileInterruptedSessions()
   suspend fun startNewScan(scope: ScanScope = ScanScope.INFRASTRUCTURE): ScanStartResult
   suspend fun resumeScan(sessionId: String): Boolean
@@ -50,6 +64,35 @@ class WorkManagerScanController(
 
   override fun observeRecentErrors(sessionId: String): Flow<List<WalkError>> =
     scanRepository.observeRecentErrors(sessionId)
+
+  override fun observeCategorySummary(category: Category): Flow<CategorySummary> =
+    scanRepository.observeCategorySummary(category)
+
+  override fun observeCategoryCandidates(category: Category): Flow<List<ScanCandidateRecord>> =
+    scanRepository.observeCategoryCandidates(category)
+
+  override fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
+    scanRepository.observeLatestSessionForCategory(category)
+
+  override suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) {
+    scanRepository.setCandidatePreselected(candidateId, preselected)
+  }
+
+  override suspend fun setCandidatesPreselected(candidateIds: List<Long>, preselected: Boolean) {
+    scanRepository.setCandidatesPreselected(candidateIds, preselected)
+  }
+
+  override suspend fun swapDuplicateKeptCandidate(
+    sessionId: String,
+    groupId: String,
+    newKeepCandidateId: Long,
+  ) {
+    scanRepository.swapDuplicateKeptCandidate(sessionId, groupId, newKeepCandidateId)
+  }
+
+  override suspend fun removeCleanedCandidates(sessionId: String?, candidateIds: List<Long>) {
+    scanRepository.removeCleanedCandidates(sessionId, candidateIds)
+  }
 
   override suspend fun reconcileInterruptedSessions() {
     val latest = scanRepository.getLatestSession() ?: return

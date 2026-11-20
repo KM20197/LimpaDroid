@@ -17,8 +17,8 @@ import io.github.km20197.limpadroid.data.fs.StorageVolumeResolver
 import io.github.km20197.limpadroid.data.log.ScanLogger
 import io.github.km20197.limpadroid.data.scan.ScanRepository
 import io.github.km20197.limpadroid.domain.fs.DefaultPathGuard
-import io.github.km20197.limpadroid.domain.model.Candidate
 import io.github.km20197.limpadroid.domain.model.ScanEvent
+import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
@@ -36,6 +36,11 @@ data class ScanWorkerDependencies(
   val scanEngine: ScanEngine,
   val scanLogger: ScanLogger,
   val applicationId: String,
+  val superfluousScanEngine: ScanEngine? = null,
+  val orphanScanEngine: ScanEngine? = null,
+  val duplicateScanEngine: ScanEngine? = null,
+  val whatsappScanEngine: ScanEngine? = null,
+  val userExcludedPathsProvider: suspend () -> Set<String> = { emptySet() },
 )
 
 class ScanWorker(
@@ -110,7 +115,7 @@ class ScanWorker(
     var latestErrorCount = session.errorCount
     var completedNormally = false
 
-    val pendingCandidates = mutableListOf<Pair<Candidate, String?>>()
+    val pendingCandidates = mutableListOf<ScanEvent.Found>()
     val pendingErrors = mutableListOf<WalkError>()
 
     suspend fun flushBatches() {
@@ -119,13 +124,20 @@ class ScanWorker(
         val errorsSnapshot = pendingErrors.toList()
         pendingCandidates.clear()
         pendingErrors.clear()
-        deps.scanRepository.appendCandidatesAndErrors(sessionId, candidatesSnapshot, errorsSnapshot)
+        deps.scanRepository.appendFoundEventsAndErrors(sessionId, candidatesSnapshot, errorsSnapshot)
       }
     }
+
+    val excludedPaths = runCatching {
+      deps.userExcludedPathsProvider()
+        .mapNotNull { raw -> runCatching { Paths.get(raw) }.getOrNull() }
+        .toSet()
+    }.getOrDefault(emptySet())
 
     val pathGuard = DefaultPathGuard(
       rawStorageRoot = rootPath,
       applicationId = deps.applicationId,
+      userExcludedPaths = excludedPaths,
     )
     val config = ScanConfig(
       sessionId = sessionId,
@@ -137,18 +149,26 @@ class ScanWorker(
       initialErrorCount = session.errorCount,
     )
 
+    val activeEngine = when (session.scope) {
+      ScanScope.SUPERFLUOUS, ScanScope.FULL -> deps.superfluousScanEngine ?: deps.scanEngine
+      ScanScope.ORPHAN -> deps.orphanScanEngine ?: deps.scanEngine
+      ScanScope.DUPLICATE -> deps.duplicateScanEngine ?: deps.scanEngine
+      ScanScope.WHATSAPP -> deps.whatsappScanEngine ?: deps.scanEngine
+      ScanScope.INFRASTRUCTURE -> deps.scanEngine
+    }
+
     deps.scanLogger.logEvent(
       "SCAN_WORKER_START",
       "session=$sessionId scope=${session.scope} resumed=$resumed root=$rootPath",
     )
 
     try {
-      deps.scanEngine.scan(config, latestCheckpointRef).collect { event ->
+      activeEngine.scan(config, latestCheckpointRef).collect { event ->
         when (event) {
           is ScanEvent.Started -> Unit
 
           is ScanEvent.Found -> {
-            pendingCandidates.add(event.candidate to event.reason)
+            pendingCandidates.add(event)
             if (pendingCandidates.size >= BATCH_FLUSH_SIZE) {
               flushBatches()
             }

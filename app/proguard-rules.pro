@@ -12,10 +12,10 @@
 #   public *;
 #}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preservar atributos de linha para diagnósticos locais sem exposição externa
+-keepattributes SourceFile,LineNumberTable
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Proteger rotas tipadas de navegação e payload de metadados da lixeira (kotlinx.serialization)
+-keep,includedescriptorclasses class io.github.km20197.limpadroid.ui.navigation.** { *; }
+-keep,includedescriptorclasses class io.github.km20197.limpadroid.domain.model.TrashMetadataPayload** { *; }
+

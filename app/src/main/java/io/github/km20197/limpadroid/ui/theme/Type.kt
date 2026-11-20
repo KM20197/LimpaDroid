@@ -8,23 +8,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import io.github.km20197.limpadroid.R
 
-val DisplayFontFamily = FontFamily(
-  Font(R.font.space_grotesk, FontWeight.Normal),
-  Font(R.font.space_grotesk, FontWeight.Medium),
-  Font(R.font.space_grotesk, FontWeight.SemiBold),
-  Font(R.font.space_grotesk, FontWeight.Bold),
-)
+// Fontes estáticas incluídas apenas no peso 400 (Regular).
+// Títulos e rótulos em negrito/seminegrito utilizam FontFamily.SansSerif
+// para evitar renderização artificial em peso 300/400.
+val DisplayFontFamily: FontFamily = FontFamily.SansSerif
 
 val BodyFontFamily = FontFamily(
   Font(R.font.plus_jakarta_sans, FontWeight.Normal),
-  Font(R.font.plus_jakarta_sans, FontWeight.Medium),
-  Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
-  Font(R.font.plus_jakarta_sans, FontWeight.Bold),
 )
 
 val MonoFontFamily = FontFamily(
   Font(R.font.jetbrains_mono, FontWeight.Normal),
-  Font(R.font.jetbrains_mono, FontWeight.Medium),
 )
 
 val LimpaDroidTypography = Typography(
@@ -69,14 +63,14 @@ val LimpaDroidTypography = Typography(
     letterSpacing = 0.2.sp,
   ),
   labelLarge = TextStyle(
-    fontFamily = BodyFontFamily,
+    fontFamily = DisplayFontFamily,
     fontWeight = FontWeight.SemiBold,
     fontSize = 14.sp,
     lineHeight = 20.sp,
     letterSpacing = 0.1.sp,
   ),
   labelMedium = TextStyle(
-    fontFamily = BodyFontFamily,
+    fontFamily = DisplayFontFamily,
     fontWeight = FontWeight.Medium,
     fontSize = 12.sp,
     lineHeight = 16.sp,
@@ -84,7 +78,7 @@ val LimpaDroidTypography = Typography(
   ),
   labelSmall = TextStyle(
     fontFamily = MonoFontFamily,
-    fontWeight = FontWeight.Medium,
+    fontWeight = FontWeight.Normal,
     fontSize = 11.sp,
     lineHeight = 16.sp,
     letterSpacing = 0.2.sp,
