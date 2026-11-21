@@ -2,6 +2,12 @@
 
 Aplicativo Android pessoal (Android 11 a Android 17 — `minSdk = 30`, `targetSdk = 37`) para análise e limpeza controlada do armazenamento interno compartilhado primário, 100% offline (sem permissão `INTERNET`) e com lixeira interna própria com retenção mínima de 30 dias.
 
+## Licença
+
+[![CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/deed.pt-br)
+
+Copyright © 2026 **Ricardo Coutinho Mello**. Distribuído sob a licença [Creative Commons Atribuição-NãoComercial 4.0 Internacional (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/deed.pt-br). Consulte o arquivo [LICENSE](LICENSE) para detalhes.
+
 ## Estado atual
 
 - **Fase 0 (Base e infraestrutura) concluída:** estrutura Gradle (`minSdk = 30`, `compileSdk = 37`, `targetSdk = 37`, bytecode alvo `17`, Gradle Wrapper `9.3.1`), tema Material 3 claro/escuro com cores dinâmicas em API 31+, navegação type-safe, onboarding de permissões (`MANAGE_EXTERNAL_STORAGE` obrigatória e `POST_NOTIFICATIONS` opcional em API 33+), resolução dinâmica da raiz via `StorageManager`/`StorageVolume`, tela inicial responsiva, modo diagnóstico acionado por toque longo na versão (com cópia de relatório) e pipeline de CI (`.github/workflows/ci.yml`).
