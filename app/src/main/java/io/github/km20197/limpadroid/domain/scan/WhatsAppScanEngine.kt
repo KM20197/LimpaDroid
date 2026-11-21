@@ -14,14 +14,10 @@ import io.github.km20197.limpadroid.domain.scan.rules.WhatsAppRootLocation
 import io.github.km20197.limpadroid.domain.scan.rules.WhatsAppScanSettings
 import java.io.IOException
 import java.nio.file.DirectoryIteratorException
-import java.nio.file.FileVisitOption
-import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
-import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -31,7 +27,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.job
 
 class WhatsAppScanEngine(
   private val settingsProvider: suspend () -> WhatsAppScanSettings = { WhatsAppScanSettings() },
@@ -55,7 +50,6 @@ class WhatsAppScanEngine(
     val autoPreselect = settings.autoPreselect
     val nowMillis = clock.nowMillis()
     val storageRoot = config.pathGuard.storageRoot
-    val flowJob = currentCoroutineContext().job
 
     var scannedFiles = 0L
     var scannedDirs = 0L
@@ -108,55 +102,81 @@ class WhatsAppScanEngine(
       mediaFolder: Path,
       match: WhatsAppMediaMatch,
     ) {
-      val collectedCandidates = mutableListOf<ScanEvent.Found>()
-      val collectedErrors = mutableListOf<Pair<Path, Throwable>>()
+      val dirQueue = ArrayDeque<Path>()
+      dirQueue.addLast(mediaFolder)
 
-      try {
-        Files.walkFileTree(
-          mediaFolder,
-          EnumSet.noneOf(FileVisitOption::class.java),
-          Int.MAX_VALUE,
-          object : SimpleFileVisitor<Path>() {
-            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-              if (!flowJob.isActive) return FileVisitResult.TERMINATE
-              if (Files.isSymbolicLink(dir)) return FileVisitResult.SKIP_SUBTREE
-              if (!config.pathGuard.isTraversalAllowed(dir)) return FileVisitResult.SKIP_SUBTREE
+      while (dirQueue.isNotEmpty()) {
+        currentCoroutineContext().ensureActive()
+        val currentDir = dirQueue.removeFirst()
 
-              if (dir != mediaFolder) {
-                val dirName = dir.fileName?.toString().orEmpty()
-                if (WhatsAppMediaRules.isForbiddenFolderName(dirName)) {
-                  return FileVisitResult.SKIP_SUBTREE
-                }
+        if (Files.isSymbolicLink(currentDir) || !Files.isDirectory(currentDir, LinkOption.NOFOLLOW_LINKS)) {
+          continue
+        }
+        if (!config.pathGuard.isTraversalAllowed(currentDir)) {
+          continue
+        }
+        if (currentDir != mediaFolder) {
+          val dirName = currentDir.fileName?.toString().orEmpty()
+          if (WhatsAppMediaRules.isForbiddenFolderName(dirName)) {
+            continue
+          }
+        }
+        if (!readPermissionChecker(currentDir)) {
+          emitError(currentDir, IOException("Diretório sem permissão de leitura"))
+          continue
+        }
+
+        scannedDirs += 1
+        lastProcessedPath = currentDir.toString()
+
+        val childDirs = mutableListOf<Path>()
+        try {
+          Files.newDirectoryStream(currentDir).use { stream ->
+            val iterator = stream.iterator()
+            while (true) {
+              currentCoroutineContext().ensureActive()
+              val entry = try {
+                if (!iterator.hasNext()) break
+                iterator.next()
+              } catch (die: DirectoryIteratorException) {
+                emitError(currentDir, die.cause ?: die)
+                break
+              } catch (ce: CancellationException) {
+                throw ce
+              } catch (t: Throwable) {
+                emitError(currentDir, t)
+                break
               }
 
-              if (!readPermissionChecker(dir)) {
-                collectedErrors.add(dir to IOException("Diretório sem permissão de leitura"))
-                return FileVisitResult.SKIP_SUBTREE
+              if (Files.isSymbolicLink(entry)) continue
+              if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
+                childDirs.add(entry)
+                continue
               }
 
-              scannedDirs += 1
-              lastProcessedPath = dir.toString()
-              return FileVisitResult.CONTINUE
-            }
+              val attrs = try {
+                Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+              } catch (ce: CancellationException) {
+                throw ce
+              } catch (t: Throwable) {
+                emitError(entry, t)
+                continue
+              }
+              if (attrs.isSymbolicLink || !attrs.isRegularFile) continue
 
-            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-              if (!flowJob.isActive) return FileVisitResult.TERMINATE
-              if (attrs.isSymbolicLink || Files.isSymbolicLink(file)) return FileVisitResult.CONTINUE
-              if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
-
-              val fileName = file.fileName?.toString().orEmpty()
-              if (fileName.startsWith(".")) return FileVisitResult.CONTINUE
-              if (!config.pathGuard.isAllowed(file)) return FileVisitResult.CONTINUE
+              val fileName = entry.fileName?.toString().orEmpty()
+              if (fileName.startsWith(".")) continue
+              if (!config.pathGuard.isAllowed(entry)) continue
 
               val size = attrs.size()
               val mtime = attrs.lastModifiedTime().toMillis()
               scannedFiles += 1
               scannedBytes += size
-              lastProcessedPath = file.toString()
+              lastProcessedPath = entry.toString()
 
               if (WhatsAppMediaRules.matchesMinAge(mtime, nowMillis, minAgeDays)) {
                 val candidate = Candidate(
-                  path = file.toString(),
+                  path = entry.toString(),
                   sizeBytes = size,
                   lastModified = mtime,
                   category = Category.WHATSAPP,
@@ -168,45 +188,28 @@ class WhatsAppScanEngine(
                 val reason = WhatsAppMediaRules.formatReason(
                   root = rootLocation,
                   mediaFolder = mediaFolder,
-                  filePath = file,
+                  filePath = entry,
                   lastModifiedMillis = mtime,
                   nowMillis = nowMillis,
                 )
-                collectedCandidates.add(ScanEvent.Found(candidate = candidate, reason = reason))
+                candidatesCount += 1
+                emit(ScanEvent.Found(candidate = candidate, reason = reason))
+                emitProgress()
               }
-              return FileVisitResult.CONTINUE
             }
+          }
+        } catch (ce: CancellationException) {
+          throw ce
+        } catch (t: Throwable) {
+          emitError(currentDir, t)
+        }
 
-            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
-              if (!flowJob.isActive) return FileVisitResult.TERMINATE
-              collectedErrors.add(file to exc)
-              return FileVisitResult.CONTINUE
-            }
-
-            override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
-              if (exc != null) {
-                collectedErrors.add(dir to exc)
-              }
-              return if (flowJob.isActive) FileVisitResult.CONTINUE else FileVisitResult.TERMINATE
-            }
-          },
-        )
-      } catch (ce: CancellationException) {
-        throw ce
-      } catch (t: Throwable) {
-        collectedErrors.add(mediaFolder to t)
+        childDirs.sortBy { it.fileName?.toString().orEmpty().lowercase() }
+        for (i in childDirs.lastIndex downTo 0) {
+          dirQueue.addFirst(childDirs[i])
+        }
       }
 
-      currentCoroutineContext().ensureActive()
-
-      for ((errPath, err) in collectedErrors) {
-        emitError(errPath, err)
-      }
-      for (found in collectedCandidates) {
-        currentCoroutineContext().ensureActive()
-        candidatesCount += 1
-        emit(found)
-      }
       completedSubtrees.add(mediaFolder.toString())
       emitProgress()
     }

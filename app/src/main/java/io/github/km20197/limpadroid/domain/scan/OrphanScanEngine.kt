@@ -44,6 +44,32 @@ class OrphanScanEngine(
     emit(ScanEvent.Started(sessionId = config.sessionId, resumed = config.resumed))
 
     val snapshot = installedAppsRepository.syncKnownApps()
+    if (!snapshot.isReliable || snapshot.presentApps.isEmpty()) {
+      val reason = snapshot.failureReason
+        ?: "Lista de pacotes instalados vazia ou inconsistente; varredura de órfãos abortada."
+      emit(
+        ScanEvent.ErrorLogged(
+          WalkError(
+            path = config.rootPath.toString(),
+            errorType = "UnreliablePackageInventory",
+            message = reason,
+          ),
+        ),
+      )
+      val durationMs = (System.nanoTime() - startNanos) / 1_000_000L
+      emit(
+        ScanEvent.Done(
+          scannedFiles = 0L,
+          scannedDirs = 0L,
+          scannedBytes = 0L,
+          candidatesCount = 0,
+          errorCount = config.initialErrorCount + 1,
+          durationMs = durationMs,
+        ),
+      )
+      return@flow
+    }
+
     val classifier = OrphanDirectoryClassifier(
       presentApps = snapshot.presentApps,
       knownApps = snapshot.knownApps,
@@ -231,23 +257,6 @@ class OrphanScanEngine(
       }
     }
 
-    // 3. Subpastas sob Documents, Pictures, Movies, Music e Download (ORPHAN_ROOT_KNOWN)
-    for (parentName in KNOWN_SUBPARENT_FOLDER_NAMES) {
-      currentCoroutineContext().ensureActive()
-      val parentDir = findDirectChildCaseInsensitive(root, parentName) ?: continue
-      if (!config.pathGuard.isTraversalAllowed(parentDir)) continue
-      val actualParentName = parentDir.fileName?.toString() ?: parentName
-      for (child in listDirectChildDirectories(parentDir)) {
-        currentCoroutineContext().ensureActive()
-        scannedDirs += 1
-        val segments = listOf(actualParentName, child.fileName?.toString().orEmpty())
-        val match = classifier.evaluateDirectory(segments)
-        if (match != null) {
-          inspectCandidateDirectory(child, segments, match)
-        }
-      }
-    }
-
     val finalCheckpoint = WalkCheckpoint(
       lastProcessedPath = root.toString(),
       completedSubtrees = setOf(ScopeOrphanMarker),
@@ -269,30 +278,7 @@ class OrphanScanEngine(
     )
   }.flowOn(ioDispatcher)
 
-  private fun findDirectChildCaseInsensitive(parent: Path, targetName: String): Path? {
-    val exact = parent.resolve(targetName)
-    if (Files.isDirectory(exact, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(exact)) {
-      return exact
-    }
-    return runCatching {
-      Files.newDirectoryStream(parent).use { stream ->
-        stream.firstOrNull { entry ->
-          !Files.isSymbolicLink(entry) &&
-            Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS) &&
-            entry.fileName?.toString()?.equals(targetName, ignoreCase = true) == true
-        }
-      }
-    }.getOrNull()
-  }
-
   private companion object {
-    val KNOWN_SUBPARENT_FOLDER_NAMES = listOf(
-      "Documents",
-      "Pictures",
-      "Movies",
-      "Music",
-      "Download",
-    )
     const val ScopeOrphanMarker = "__ORPHAN_SCAN__"
   }
 }

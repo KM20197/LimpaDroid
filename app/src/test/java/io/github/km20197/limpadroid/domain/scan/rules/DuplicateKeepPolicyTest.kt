@@ -62,6 +62,7 @@ class DuplicateKeepPolicyTest {
     )
 
     assertTrue(resolution.hasPriorityMatch)
+    assertTrue(resolution.hasSamePriorityTie)
     assertEquals(older, resolution.keptEntry)
     assertEquals(listOf(newer), resolution.removableEntries)
   }
@@ -79,8 +80,33 @@ class DuplicateKeepPolicyTest {
     )
 
     assertTrue(resolution.hasPriorityMatch)
+    assertTrue(resolution.hasSamePriorityTie)
     assertEquals(pathA, resolution.keptEntry)
     assertEquals(listOf(pathB), resolution.removableEntries)
+  }
+
+  @Test
+  fun `M7 marks same-priority project copies and cross-tier project paths with hasSamePriorityTie true`() {
+    val projA = DuplicateFileEntry("/storage/emulated/0/Documents/ProjA/build/out.bin", 4_096L, 1_000L)
+    val projB = DuplicateFileEntry("/storage/emulated/0/Documents/ProjB/build/out.bin", 4_096L, 2_000L)
+    val sameTierProj = DuplicateKeepPolicy.resolve(
+      sha256 = "0".repeat(64),
+      entries = listOf(projA, projB),
+      priorityFolders = DuplicateKeepPolicy.DEFAULT_PRIORITY_FOLDERS,
+      storageRoot = root,
+    )
+    assertTrue(sameTierProj.hasPriorityMatch)
+    assertTrue(sameTierProj.hasSamePriorityTie)
+
+    val gitAsset = DuplicateFileEntry("/storage/emulated/0/Documents/Repo/.git/pack.dat", 4_096L, 1_000L)
+    val dlCopy = DuplicateFileEntry("/storage/emulated/0/Download/pack.dat", 4_096L, 2_000L)
+    val projectRes = DuplicateKeepPolicy.resolve(
+      sha256 = "9".repeat(64),
+      entries = listOf(gitAsset, dlCopy),
+      priorityFolders = DuplicateKeepPolicy.DEFAULT_PRIORITY_FOLDERS,
+      storageRoot = root,
+    )
+    assertTrue(projectRes.hasSamePriorityTie)
   }
 
   @Test

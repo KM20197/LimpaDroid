@@ -46,13 +46,16 @@ class OrphanScanEngineTest {
       Files.createDirectories(root.resolve("Android/media/com.whatsapp/WhatsApp/Media"))
       Files.createDirectories(root.resolve("WhatsApp/Media"))
 
-      // MEDIUM: pasta em Documents de app removido conhecido
-      val docsRemoved = Files.createDirectories(root.resolve("Documents/Antigo Editor"))
-      Files.writeString(docsRemoved.resolve("rascunho.txt"), "abcde")
+      // MEDIUM: pasta na raiz de app removido conhecido
+      val rootKnownRemoved = Files.createDirectories(root.resolve("Antigo Editor"))
+      Files.writeString(rootKnownRemoved.resolve("rascunho.txt"), "abcde")
 
-      // MEDIUM protegido por subcaminho na lista de exceções do usuário
-      val docsNestedExcluded = Files.createDirectories(root.resolve("Download/Antigo_Editor/Manter"))
-      Files.writeString(docsNestedExcluded.resolve("importante.pdf"), "keep-me")
+      // Pastas pessoais do usuário (Documents, Download, Pictures) não entram em ORPHAN_ROOT_KNOWN (M6)
+      Files.createDirectories(root.resolve("Documents/Antigo Editor")).also {
+        Files.writeString(it.resolve("doc_pessoal.txt"), "manter")
+      }
+      val nestedExcluded = Files.createDirectories(root.resolve("Antigo_Editor_Protegido/Manter"))
+      Files.writeString(nestedExcluded.resolve("importante.pdf"), "keep-me")
 
       // LOW: pasta na raiz em formato de pacote não presente
       val rootPattern = Files.createDirectories(root.resolve("net.unknown.tool"))
@@ -71,6 +74,7 @@ class OrphanScanEngineTest {
           knownApps = listOf(
             KnownAppRecord("com.removed.game", "Removed Game", 100L, 200L, 1_700_000_000_000L),
             KnownAppRecord("com.antigo.editor", "Antigo Editor", 100L, 200L, 1_700_100_000_000L),
+            KnownAppRecord("com.antigo.editor.prot", "Antigo Editor Protegido", 100L, 200L, 1_700_100_000_000L),
           ),
         ),
       )
@@ -78,7 +82,7 @@ class OrphanScanEngineTest {
       val guard = DefaultPathGuard(
         rawStorageRoot = root,
         applicationId = selfAppId,
-        userExcludedPaths = setOf(docsNestedExcluded),
+        userExcludedPaths = setOf(nestedExcluded),
       )
 
       val engine = OrphanScanEngine(fakeAppsRepo, selfAppId)
@@ -108,9 +112,9 @@ class OrphanScanEngineTest {
       assertTrue(high.first.preselected)
       assertTrue(high.second.orEmpty().contains("Removed Game"))
 
-      // MEDIUM desmarcado e Download/Antigo_Editor ignorado por conter exceção aninhada
+      // MEDIUM desmarcado na raiz e Documents/Antigo Editor protegido por M6
       val medium = byRule.getValue(OrphanRuleId.ORPHAN_ROOT_KNOWN.ruleId)
-      assertEquals(docsRemoved.toString(), medium.first.path)
+      assertEquals(rootKnownRemoved.toString(), medium.first.path)
       assertEquals(5L, medium.first.sizeBytes)
       assertEquals(Confidence.MEDIUM, medium.first.confidence)
       assertFalse(medium.first.preselected)
@@ -123,12 +127,46 @@ class OrphanScanEngineTest {
       assertEquals(Confidence.LOW, low.first.confidence)
       assertFalse(low.first.preselected)
 
-      // Nunca sugere arquivado, WhatsApp ou Download/Antigo_Editor com exceção interna
+      // Nunca sugere arquivado, WhatsApp, subpastas de Documents/Download nem diretório com exceção aninhada
       val paths = foundEvents.map { it.candidate.path }
       assertFalse(paths.any { it.contains("com.archived.app") })
       assertFalse(paths.any { it.contains("WhatsApp") || it.contains("com.whatsapp") })
-      assertFalse(paths.any { it.contains("Download/Antigo_Editor") })
+      assertFalse(paths.any { it.contains("Documents/Antigo Editor") })
+      assertFalse(paths.any { it.contains("Antigo_Editor_Protegido") })
     }
+
+  @Test
+  fun `A3 aborts orphan scan cleanly when package inventory is empty or unreliable`() = runTest {
+    val root = tempFolder.newFolder("unreliable_orphan").toPath().toRealPath()
+    val mediaPkg = Files.createDirectories(root.resolve("Android/media/com.removed.game"))
+    Files.writeString(mediaPkg.resolve("save.bin"), "1234")
+
+    val emptyRepo = FakeInstalledAppsRepository(
+      InstalledAppsSnapshot(
+        presentApps = emptyList(),
+        knownApps = listOf(KnownAppRecord("com.removed.game", "Removed", 1L, 2L, 3L)),
+        isReliable = false,
+        failureReason = "Inventário vazio",
+      ),
+    )
+
+    val events = OrphanScanEngine(emptyRepo, selfAppId)
+      .scan(
+        ScanConfig(
+          sessionId = "s-unreliable",
+          scope = ScanScope.ORPHAN,
+          rootPath = root,
+          pathGuard = DefaultPathGuard(root, selfAppId),
+        ),
+      )
+      .toList()
+
+    assertTrue(events.filterIsInstance<ScanEvent.Found>().isEmpty())
+    assertEquals(1, events.filterIsInstance<ScanEvent.ErrorLogged>().size)
+    val done = events.filterIsInstance<ScanEvent.Done>().single()
+    assertEquals(0, done.candidatesCount)
+    assertEquals(1, done.errorCount)
+  }
 
   @Test
   fun `scan stops cooperatively when flow collection cancels early`() = runTest {
@@ -161,12 +199,10 @@ class OrphanScanEngineTest {
   }
 
   @Test
-  fun `scan skips excluded parent directories Android media and Documents completely`() = runTest {
+  fun `scan skips excluded parent directories Android media completely`() = runTest {
     val root = tempFolder.newFolder("excluded_parents").toPath().toRealPath()
     val mediaPkg = Files.createDirectories(root.resolve("Android/media/com.removed.game"))
     Files.writeString(mediaPkg.resolve("data.bin"), "1234")
-    val docsOrphan = Files.createDirectories(root.resolve("Documents/Removed App"))
-    Files.writeString(docsOrphan.resolve("doc.txt"), "5678")
     val rootOrphan = Files.createDirectories(root.resolve("com.removed.game"))
     Files.writeString(rootOrphan.resolve("root.dat"), "90")
 
@@ -184,7 +220,6 @@ class OrphanScanEngineTest {
       applicationId = selfAppId,
       userExcludedPaths = setOf(
         root.resolve("Android/media"),
-        root.resolve("Documents"),
       ),
     )
 

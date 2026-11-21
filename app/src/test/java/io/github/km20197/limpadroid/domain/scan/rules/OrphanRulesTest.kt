@@ -60,8 +60,8 @@ class OrphanRulesTest {
   )
 
   @Test
-  fun `ORPHAN_MEDIA_PKG detects absent package folders with HIGH confidence and enrichment`() {
-    // Positivos
+  fun `ORPHAN_MEDIA_PKG detects HIGH only for known removed apps and MEDIUM unselected otherwise`() {
+    // Positivo com aplicativo removido conhecido -> HIGH + preselected
     val knownMedia = classifier.evaluateDirectory(listOf("Android", "media", "com.removed.game"))
     assertNotNull(knownMedia)
     assertEquals(OrphanRuleId.ORPHAN_MEDIA_PKG, knownMedia!!.ruleId)
@@ -72,11 +72,12 @@ class OrphanRulesTest {
     assertTrue(reason.contains("Super Jogo - Retro_2"))
     assertTrue(reason.contains("Removido em"))
 
+    // Pacote ausente sem correspondência em known_apps removidos -> MEDIUM e desmarcado (A3)
     val unseenMedia = classifier.evaluateDirectory(listOf("Android", "media", "com.unseen.legacy"))
     assertNotNull(unseenMedia)
     assertEquals(OrphanRuleId.ORPHAN_MEDIA_PKG, unseenMedia!!.ruleId)
-    assertEquals(Confidence.HIGH, unseenMedia.confidence)
-    assertTrue(unseenMedia.preselected)
+    assertEquals(Confidence.MEDIUM, unseenMedia.confidence)
+    assertFalse(unseenMedia.preselected)
     assertNull(unseenMedia.matchedApp)
 
     // Negativos
@@ -90,8 +91,8 @@ class OrphanRulesTest {
   }
 
   @Test
-  fun `ORPHAN_ROOT_KNOWN matches normalized labels and packages with MEDIUM unselected confidence`() {
-    // Positivos: normalização remove espaços, hífens e sublinhados em raiz e subpastas permitidas
+  fun `ORPHAN_ROOT_KNOWN matches normalized root folders and ignores personal content parent dirs`() {
+    // Positivo na raiz: normalização remove espaços, hífens e sublinhados
     val rootMatch = classifier.evaluateDirectory(listOf("SuperJogoRetro2"))
     assertNotNull(rootMatch)
     assertEquals(OrphanRuleId.ORPHAN_ROOT_KNOWN, rootMatch!!.ruleId)
@@ -99,29 +100,19 @@ class OrphanRulesTest {
     assertFalse(rootMatch.preselected)
     assertEquals("com.removed.game", rootMatch.matchedApp?.packageName)
 
-    val docsMatch = classifier.evaluateDirectory(listOf("Documents", "Super_Jogo-Retro 2"))
-    assertNotNull(docsMatch)
-    assertEquals(OrphanRuleId.ORPHAN_ROOT_KNOWN, docsMatch!!.ruleId)
-    assertEquals(Confidence.MEDIUM, docsMatch.confidence)
-    assertFalse(docsMatch.preselected)
-
-    val downloadPkgMatch = classifier.evaluateDirectory(listOf("Download", "com.removed.game"))
-    assertNotNull(downloadPkgMatch)
-    assertEquals(OrphanRuleId.ORPHAN_ROOT_KNOWN, downloadPkgMatch!!.ruleId)
-
-    listOf("Pictures", "Movies", "Music").forEach { parent ->
-      val m = classifier.evaluateDirectory(listOf(parent, "super-jogo_retro2"))
-      assertNotNull("Expected match under $parent", m)
-      assertEquals(OrphanRuleId.ORPHAN_ROOT_KNOWN, m!!.ruleId)
+    // M6: Pastas de conteúdo pessoal do usuário (Documents, Download, Pictures, Movies, Music) não geram candidatos
+    listOf("Documents", "Download", "Pictures", "Movies", "Music").forEach { parent ->
+      assertNull("Personal library $parent must be ignored", classifier.evaluateDirectory(listOf(parent, "super-jogo_retro2")))
+      assertNull("Personal library $parent must be ignored", classifier.evaluateDirectory(listOf(parent, "com.removed.game")))
     }
 
     // Negativos: pastas-raiz padrão e apps presentes/arquivados nunca são sugeridos
     assertNull(classifier.evaluateDirectory(listOf("Music")))
     assertNull(classifier.evaluateDirectory(listOf("Documents")))
     assertNull(classifier.evaluateDirectory(listOf("Documents", "LimpaDroid")))
-    assertNull(classifier.evaluateDirectory(listOf("Documents", "Notas_Ativas")))
-    assertNull(classifier.evaluateDirectory(listOf("Documents", "Leitor Arquivado")))
-    assertNull(classifier.evaluateDirectory(listOf("Download", "com.archived.reader")))
+    assertNull(classifier.evaluateDirectory(listOf("Notas_Ativas")))
+    assertNull(classifier.evaluateDirectory(listOf("Leitor Arquivado")))
+    assertNull(classifier.evaluateDirectory(listOf("com.archived.reader")))
     assertNull(classifier.evaluateDirectory(listOf("DCIM", "SuperJogoRetro2")))
   }
 

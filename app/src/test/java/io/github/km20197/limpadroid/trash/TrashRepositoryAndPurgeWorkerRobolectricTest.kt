@@ -29,6 +29,9 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.attribute.FileTime
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -56,6 +59,7 @@ class TrashRepositoryAndPurgeWorkerRobolectricTest {
   private lateinit var storageRoot: Path
   private lateinit var logDir: java.io.File
   private lateinit var scannedPaths: MutableList<String>
+  private lateinit var scanBatchCalls: MutableList<List<String>>
   private var currentClockMillis: Long = 1_700_000_000_000L
 
   @Before
@@ -67,6 +71,7 @@ class TrashRepositoryAndPurgeWorkerRobolectricTest {
     storageRoot = tempFolder.newFolder("shared_storage").toPath().toRealPath()
     logDir = tempFolder.newFolder("logs")
     scannedPaths = mutableListOf()
+    scanBatchCalls = mutableListOf()
     currentClockMillis = 1_700_000_000_000L
   }
 
@@ -842,6 +847,211 @@ class TrashRepositoryAndPurgeWorkerRobolectricTest {
     assertTrue(scanRepo.observeCategoryCandidates(Category.DUPLICATE).first().isEmpty())
   }
 
+  @Test
+  fun `A1 post-move RuntimeException and CancellationException recover entry as IN_TRASH without stranding payload`() =
+    runTest {
+      val repo = createRepository()
+      val dlDir = Files.createDirectories(storageRoot.resolve("Download"))
+
+      // 1) Falha após Files.move (ex.: DAO ou IO pós-movimentação) -> recupera como IN_TRASH
+      val file1 = Files.writeString(dlDir.resolve("pos_erro.tmp"), "payload-erro")
+      val mtime1 = 1_690_000_000_000L
+      Files.setLastModifiedTime(file1, FileTime.fromMillis(mtime1))
+      val res1 = repo.moveToTrashForTestWithPostMoveHook(
+        candidate = Candidate(
+          path = file1.toString(),
+          sizeBytes = 12L,
+          lastModified = mtime1,
+          category = Category.SUPERFLUOUS,
+          ruleId = "PARTIAL_DL",
+          confidence = Confidence.HIGH,
+        ),
+        onBeforePostMovePersistence = { throw IllegalStateException("falha simulada pós-movimentação") },
+      )
+      assertTrue(res1 is TrashMoveResult.Moved)
+      val moved1 = (res1 as TrashMoveResult.Moved).entry
+      assertEquals(TrashEntryState.IN_TRASH, repo.getEntry(moved1.id)?.state)
+      assertTrue(Files.exists(Paths.get(moved1.trashPath), LinkOption.NOFOLLOW_LINKS))
+
+      // 2) Cancelamento após Files.move -> garante IN_TRASH em NonCancellable e relança CancellationException
+      val file2 = Files.writeString(dlDir.resolve("pos_cancel.tmp"), "payload-cancel")
+      val mtime2 = 1_690_000_100_000L
+      Files.setLastModifiedTime(file2, FileTime.fromMillis(mtime2))
+      var cancellationPropagated = false
+      try {
+        repo.moveToTrashForTestWithPostMoveHook(
+          candidate = Candidate(
+            path = file2.toString(),
+            sizeBytes = 14L,
+            lastModified = mtime2,
+            category = Category.SUPERFLUOUS,
+            ruleId = "PARTIAL_DL",
+            confidence = Confidence.HIGH,
+          ),
+          onBeforePostMovePersistence = { throw CancellationException("cancelamento simulado") },
+        )
+      } catch (_: CancellationException) {
+        cancellationPropagated = true
+      }
+      assertTrue(cancellationPropagated)
+      val activeAfterCancel = repo.inTrashEntries.first()
+      assertTrue(activeAfterCancel.any { it.originalPath == file2.toString() && it.state == TrashEntryState.IN_TRASH })
+
+      // 3) Reconcilia entrada FAILED pré-existente cujo payload existe no disco
+      val storage = TrashStorage()
+      val trashRoot = storage.resolveTrashRoot(storageRoot)
+      val failedDir = storage.allocateEntryDir(trashRoot, "failed-with-payload", currentClockMillis)
+      Files.createDirectories(failedDir)
+      val failedPayload = Files.writeString(storage.resolvePayloadPath(failedDir), "salvo")
+      db.trashEntryDao().upsert(
+        TrashEntryEntity(
+          id = "failed-with-payload",
+          originalPath = storageRoot.resolve("Download/ausente.tmp").toString(),
+          trashPath = failedPayload.toString(),
+          sizeBytes = 5L,
+          sha256 = null,
+          originalMtime = 100L,
+          category = Category.SUPERFLUOUS.name,
+          ruleId = "TEST",
+          deletedAt = currentClockMillis,
+          expiresAt = currentClockMillis + TrashEntry.RETENTION_MILLIS,
+          state = TrashEntryState.FAILED.name,
+        ),
+      )
+
+      repo.reconcilePendingAndRebuildIndex()
+      val recovered = repo.getEntry("failed-with-payload")
+      assertEquals(TrashEntryState.IN_TRASH, recovered?.state)
+      assertTrue(Files.exists(storage.resolveMetadataPath(failedDir), LinkOption.NOFOLLOW_LINKS))
+    }
+
+  @Test
+  fun `A2 tampered Room trashPath outside lixeira never deletes DCIM Camera on purge`() = runTest {
+    val repo = createRepository()
+    val dcimCamera = Files.createDirectories(storageRoot.resolve("DCIM/Camera"))
+    val victimFile = Files.writeString(dcimCamera.resolve("foto_importante.jpg"), "nao-apagar")
+
+    db.trashEntryDao().upsert(
+      TrashEntryEntity(
+        id = "tampered-room-id",
+        originalPath = victimFile.toString(),
+        trashPath = victimFile.toString(),
+        sizeBytes = 10L,
+        sha256 = null,
+        originalMtime = 100L,
+        category = Category.SUPERFLUOUS.name,
+        ruleId = "TEST",
+        deletedAt = currentClockMillis - 40L * TrashEntry.MILLIS_PER_DAY,
+        expiresAt = currentClockMillis - TrashEntry.MILLIS_PER_DAY,
+        state = TrashEntryState.IN_TRASH.name,
+      ),
+    )
+
+    val summary = repo.purgeExpired()
+    assertEquals(0, summary.purgedCount)
+    assertTrue(Files.exists(victimFile, LinkOption.NOFOLLOW_LINKS))
+    assertEquals(TrashEntryState.IN_TRASH, repo.getEntry("tampered-room-id")?.state)
+  }
+
+  @Test
+  fun `A4 concurrent move reconcile and purge execute safely under mutex`() = runTest {
+    val repo = createRepository()
+    val dlDir = Files.createDirectories(storageRoot.resolve("Download"))
+    val files = (1..5).map { idx ->
+      val p = Files.writeString(dlDir.resolve("concurrent_$idx.tmp"), "item-$idx")
+      Candidate(
+        path = p.toString(),
+        sizeBytes = Files.size(p),
+        lastModified = Files.getLastModifiedTime(p).toMillis(),
+        category = Category.SUPERFLUOUS,
+        ruleId = "PARTIAL_DL",
+        confidence = Confidence.HIGH,
+      )
+    }
+
+    val jobs = listOf(
+      async { repo.moveCandidatesToTrash(files.mapIndexed { idx, c -> io.github.km20197.limpadroid.domain.model.ScanCandidateRecord(idx + 1L, "s-conc", c, null) }) },
+      async { repo.reconcilePendingAndRebuildIndex() },
+      async { repo.purgeExpired() },
+    )
+    jobs.awaitAll()
+
+    val inTrash = repo.inTrashEntries.first()
+    assertEquals(5, inTrash.size)
+    assertTrue(inTrash.all { Files.exists(Paths.get(it.trashPath), LinkOption.NOFOLLOW_LINKS) })
+  }
+
+  @Test
+  fun `M3 moveCandidatesToTrash batches MediaScanner calls once per batch`() = runTest {
+    val repo = createRepository()
+    val dlDir = Files.createDirectories(storageRoot.resolve("Download"))
+    val records = (1..3).map { idx ->
+      val f = Files.writeString(dlDir.resolve("batch_$idx.tmp"), "batch-$idx")
+      io.github.km20197.limpadroid.domain.model.ScanCandidateRecord(
+        id = idx.toLong(),
+        sessionId = "s-batch",
+        candidate = Candidate(
+          path = f.toString(),
+          sizeBytes = Files.size(f),
+          lastModified = Files.getLastModifiedTime(f).toMillis(),
+          category = Category.SUPERFLUOUS,
+          ruleId = "PARTIAL_DL",
+          confidence = Confidence.HIGH,
+        ),
+        reason = null,
+      )
+    }
+
+    val summary = repo.moveCandidatesToTrash(records)
+    assertEquals(3, summary.movedCandidateIds.size)
+    assertEquals(1, scanBatchCalls.size)
+    assertEquals(3, scanBatchCalls.single().size)
+  }
+
+  @Test
+  fun `PurgeWorker propagates CancellationException instead of returning retry`() = runTest {
+    val storageWithDelay = TrashStorage()
+    val dlDir = Files.createDirectories(storageRoot.resolve("Download"))
+    val file = Files.writeString(dlDir.resolve("cancel_worker.tmp"), "1234")
+    val repo = createRepository()
+    repo.moveToTrash(
+      Candidate(
+        path = file.toString(),
+        sizeBytes = 4L,
+        lastModified = Files.getLastModifiedTime(file).toMillis(),
+        category = Category.SUPERFLUOUS,
+        ruleId = "PARTIAL_DL",
+        confidence = Confidence.HIGH,
+      ),
+    )
+    // Garante que uma coroutine cancelada propaga CancellationException fora do WorkerFactory normal
+    currentClockMillis += 35L * TrashEntry.MILLIS_PER_DAY
+    val cancellingResolver = object : StorageVolumeResolver {
+      override fun resolvePrimarySharedStorage(): StorageRootResolution {
+        throw CancellationException("worker cancelado")
+      }
+    }
+    val cancellingRepo = TrashRepository(
+      trashEntryDao = db.trashEntryDao(),
+      operationHistoryDao = db.operationHistoryDao(),
+      storageVolumeResolver = cancellingResolver,
+      mediaScannerHook = MediaScannerHook { },
+      scanLogger = LocalScanLogger(logDir),
+      applicationId = "io.github.km20197.limpadroid",
+      trashStorage = storageWithDelay,
+      clock = AppClock { currentClockMillis },
+      scanCandidateDao = db.scanCandidateDao(),
+    )
+    val worker = buildPurgeWorker(cancellingRepo)
+    var cancelled = false
+    try {
+      worker.doWork()
+    } catch (_: CancellationException) {
+      cancelled = true
+    }
+    assertTrue(cancelled)
+  }
+
   private fun createRepository(): TrashRepository = TrashRepository(
     trashEntryDao = db.trashEntryDao(),
     operationHistoryDao = db.operationHistoryDao(),
@@ -849,7 +1059,10 @@ class TrashRepositoryAndPurgeWorkerRobolectricTest {
       override fun resolvePrimarySharedStorage(): StorageRootResolution =
         StorageRootResolution.Available(storageRoot, "Armazenamento de teste")
     },
-    mediaScannerHook = MediaScannerHook { paths -> scannedPaths.addAll(paths) },
+    mediaScannerHook = MediaScannerHook { paths ->
+      scannedPaths.addAll(paths)
+      scanBatchCalls.add(paths)
+    },
     scanLogger = LocalScanLogger(logDir),
     applicationId = "io.github.km20197.limpadroid",
     clock = AppClock { currentClockMillis },

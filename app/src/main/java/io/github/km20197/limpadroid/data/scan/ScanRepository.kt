@@ -172,6 +172,14 @@ class ScanRepository(
     }
   }
 
+  suspend fun getCandidatesByIds(candidateIds: List<Long>): List<ScanCandidateRecord> {
+    if (candidateIds.isEmpty()) return emptyList()
+    return candidateIds
+      .chunked(BATCH_PARAM_CHUNK)
+      .flatMap { candidateDao.getByIds(it) }
+      .map { it.toDomain() }
+  }
+
   suspend fun getSession(sessionId: String): ScanSession? =
     sessionDao.getSession(sessionId)?.toDomain()
 

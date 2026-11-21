@@ -182,6 +182,11 @@
     <string name="results_feedback_cleanup_done">%1$d item(ns) movido(s) para a lixeira (%2$s).</string>
     <string name="results_feedback_mediastore_only">%1$d registro(s) do MediaStore atualizado(s).</string>
     <string name="results_feedback_skipped_suffix">%1$d item(ns) ignorado(s) ou com falha na revalidação.</string>
+    <string name="results_feedback_cleanup_failed">Não foi possível concluir a limpeza em segundo plano.</string>
+    <string name="cleanup_notification_channel_name">Limpeza em segundo plano</string>
+    <string name="cleanup_notification_channel_desc">Progresso da movimentação de arquivos selecionados para a lixeira interna.</string>
+    <string name="cleanup_notification_title">Movendo itens para a lixeira</string>
+    <string name="cleanup_notification_text">Processando %1$d item(ns) selecionado(s)…</string>
 
     <string name="rule_thumbs_title">Miniaturas em cache (.thumbnails)</string>
     <string name="rule_thumbs_desc">Arquivos em pastas .thumbnails dentro de DCIM e Pictures.</string>
@@ -200,7 +205,7 @@
     <string name="rule_orphan_media_pkg_title">Pacote ausente em Android/media</string>
     <string name="rule_orphan_media_pkg_desc">Subpasta em Android/media cujo identificador de pacote não está entre aplicativos instalados ou arquivados.</string>
     <string name="rule_orphan_root_known_title">Pasta de aplicativo removido no histórico</string>
-    <string name="rule_orphan_root_known_desc">Pasta na raiz ou em diretórios compartilhados compatível com aplicativo anteriormente instalado e já removido.</string>
+    <string name="rule_orphan_root_known_desc">Pasta na raiz do armazenamento compatível com aplicativo anteriormente instalado e já removido.</string>
     <string name="rule_orphan_root_pattern_title">Pasta com formato de pacote na raiz</string>
     <string name="rule_orphan_root_pattern_desc">Diretório na raiz cujo nome segue padrão de pacote e não corresponde a nenhum aplicativo presente.</string>
     <string name="rule_duplicate_priority_title">Duplicados com pasta de prioridade</string>

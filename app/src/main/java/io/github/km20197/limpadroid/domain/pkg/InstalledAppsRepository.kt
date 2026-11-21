@@ -19,6 +19,8 @@ data class KnownAppRecord(
 data class InstalledAppsSnapshot(
   val presentApps: List<InstalledAppInfo>,
   val knownApps: List<KnownAppRecord>,
+  val isReliable: Boolean = true,
+  val failureReason: String? = null,
 )
 
 object AppIdentifierNormalizer {

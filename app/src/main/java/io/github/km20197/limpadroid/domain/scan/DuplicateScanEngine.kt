@@ -68,7 +68,8 @@ class DuplicateScanEngine(
     var lastProgressMillis = System.currentTimeMillis()
 
     val walkErrors = mutableListOf<WalkError>()
-    val sizeBuckets = HashMap<Long, MutableList<DuplicateFileEntry>>()
+    // M4 Estágio 1A: primeira passagem guarda somente contadores leves por tamanho (sem alocar entradas individuais)
+    val sizeCounts = HashMap<Long, Byte>()
 
     suspend fun emitError(path: String, throwable: Throwable) {
       errorCount += 1
@@ -107,10 +108,10 @@ class DuplicateScanEngine(
       )
     }
 
-    // Estágio 1: varredura iterativa agrupando arquivos regulares por tamanho exato
-    if (!Files.exists(storageRoot) || !Files.isDirectory(storageRoot)) {
-      emitError(storageRoot.toString(), IOException("Raiz de armazenamento inacessível: $storageRoot"))
-    } else {
+    fun walkStorageTree(
+      recordStatsAndErrors: Boolean,
+      onRegularFile: (file: Path, size: Long, mtime: Long) -> Unit,
+    ) {
       val dirDepthAllowedFiles = ArrayDeque<Boolean>()
       Files.walkFileTree(
         storageRoot,
@@ -136,17 +137,21 @@ class DuplicateScanEngine(
                 return FileVisitResult.SKIP_SUBTREE
               }
               if (!readPermissionChecker(dir)) {
-                walkErrors.add(
-                  WalkError(
-                    path = dir.toString(),
-                    errorType = "AccessDeniedException",
-                    message = "Diretório sem permissão de leitura",
-                  ),
-                )
+                if (recordStatsAndErrors) {
+                  walkErrors.add(
+                    WalkError(
+                      path = dir.toString(),
+                      errorType = "AccessDeniedException",
+                      message = "Diretório sem permissão de leitura",
+                    ),
+                  )
+                }
                 return FileVisitResult.SKIP_SUBTREE
               }
-              scannedDirs += 1
-              lastProcessedPath = dir.toString()
+              if (recordStatsAndErrors) {
+                scannedDirs += 1
+                lastProcessedPath = dir.toString()
+              }
               dirDepthAllowedFiles.addLast(decision.collectFiles)
             } else {
               dirDepthAllowedFiles.addLast(true)
@@ -166,32 +171,29 @@ class DuplicateScanEngine(
             if (!allowFilesHere) return FileVisitResult.CONTINUE
 
             val size = attrs.size()
-            scannedFiles += 1
-            scannedBytes += size
-            lastProcessedPath = file.toString()
+            if (recordStatsAndErrors) {
+              scannedFiles += 1
+              scannedBytes += size
+              lastProcessedPath = file.toString()
+            }
 
             if (size >= minSizeBytes) {
-              val mtime = attrs.lastModifiedTime().toMillis()
-              sizeBuckets.getOrPut(size) { ArrayList(2) }.add(
-                DuplicateFileEntry(
-                  path = file.toString(),
-                  sizeBytes = size,
-                  lastModified = mtime,
-                ),
-              )
+              onRegularFile(file, size, attrs.lastModifiedTime().toMillis())
             }
             return FileVisitResult.CONTINUE
           }
 
           override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
             if (!flowJob.isActive) return FileVisitResult.TERMINATE
-            walkErrors.add(
-              WalkError(
-                path = file.toString(),
-                errorType = exc.javaClass.simpleName.ifBlank { "IOException" },
-                message = exc.message ?: "Erro de leitura de arquivo",
-              ),
-            )
+            if (recordStatsAndErrors) {
+              walkErrors.add(
+                WalkError(
+                  path = file.toString(),
+                  errorType = exc.javaClass.simpleName.ifBlank { "IOException" },
+                  message = exc.message ?: "Erro de leitura de arquivo",
+                ),
+              )
+            }
             return FileVisitResult.CONTINUE
           }
 
@@ -199,7 +201,7 @@ class DuplicateScanEngine(
             if (dirDepthAllowedFiles.isNotEmpty()) {
               dirDepthAllowedFiles.removeLast()
             }
-            if (exc != null) {
+            if (exc != null && recordStatsAndErrors) {
               walkErrors.add(
                 WalkError(
                   path = dir.toString(),
@@ -214,6 +216,22 @@ class DuplicateScanEngine(
       )
     }
 
+    val collidingSizes = HashSet<Long>()
+    if (!Files.exists(storageRoot) || !Files.isDirectory(storageRoot)) {
+      emitError(storageRoot.toString(), IOException("Raiz de armazenamento inacessível: $storageRoot"))
+    } else {
+      walkStorageTree(recordStatsAndErrors = true) { _, size, _ ->
+        val current = sizeCounts[size]
+        if (current == null) {
+          sizeCounts[size] = 1
+        } else if (current.toInt() == 1) {
+          sizeCounts[size] = 2
+          collidingSizes.add(size)
+        }
+      }
+      sizeCounts.clear()
+    }
+
     currentCoroutineContext().ensureActive()
 
     for (err in walkErrors) {
@@ -222,20 +240,30 @@ class DuplicateScanEngine(
     }
     walkErrors.clear()
 
-    // Descarta grupos de tamanho único imediatamente para liberar memória
+    // M4 Estágio 1B: segunda passagem coleta somente arquivos cujo tamanho tem colisão (>= 2)
+    val sizeBuckets = HashMap<Long, MutableList<DuplicateFileEntry>>()
+    if (collidingSizes.isNotEmpty() && Files.exists(storageRoot) && Files.isDirectory(storageRoot)) {
+      walkStorageTree(recordStatsAndErrors = false) { file, size, mtime ->
+        if (size in collidingSizes && config.pathGuard.isAllowed(file)) {
+          sizeBuckets.getOrPut(size) { ArrayList(2) }.add(
+            DuplicateFileEntry(
+              path = file.toString(),
+              sizeBytes = size,
+              lastModified = mtime,
+            ),
+          )
+        }
+      }
+    }
+    collidingSizes.clear()
+
     val stage1Groups = ArrayList<List<DuplicateFileEntry>>()
     val bucketIterator = sizeBuckets.values.iterator()
     while (bucketIterator.hasNext()) {
       val group = bucketIterator.next()
       bucketIterator.remove()
       if (group.size >= 2) {
-        val guarded = group.filter { entry ->
-          currentCoroutineContext().ensureActive()
-          config.pathGuard.isAllowed(Paths.get(entry.path))
-        }
-        if (guarded.size >= 2) {
-          stage1Groups.add(guarded)
-        }
+        stage1Groups.add(group)
       }
     }
     sizeBuckets.clear()
@@ -360,7 +388,13 @@ class DuplicateScanEngine(
       } else {
         DuplicateRuleId.DUPLICATE_NO_PRIORITY.ruleId
       }
-      val confidence = if (resolution.hasPriorityMatch) Confidence.HIGH else Confidence.MEDIUM
+      // M7: reduz confiança para MEDIUM e desmarca quando há empate no mesmo nível de prioridade
+      // ou envolvimento de diretórios de projetos / dados de apps.
+      val confidence = if (resolution.hasPriorityMatch && !resolution.hasSamePriorityTie) {
+        Confidence.HIGH
+      } else {
+        Confidence.MEDIUM
+      }
       val keptReason = if (resolution.hasPriorityMatch) {
         REASON_KEPT_PRIORITY
       } else {

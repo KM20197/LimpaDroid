@@ -22,6 +22,7 @@ data class DuplicateGroupResolution(
   val keptEntry: DuplicateFileEntry,
   val removableEntries: List<DuplicateFileEntry>,
   val hasPriorityMatch: Boolean,
+  val hasSamePriorityTie: Boolean = false,
 )
 
 object DuplicateKeepPolicy {
@@ -36,6 +37,19 @@ object DuplicateKeepPolicy {
     "Music",
   )
 
+  private val PROJECT_OR_APP_DATA_SEGMENTS: Set<String> = setOf(
+    ".git",
+    ".gradle",
+    ".idea",
+    ".vscode",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "target",
+  )
+
   fun normalizeFolderSegments(rawFolder: String): List<String> =
     rawFolder
       .trim()
@@ -44,6 +58,13 @@ object DuplicateKeepPolicy {
       .split('/')
       .map { it.trim() }
       .filter { it.isNotEmpty() && it != "." && it != ".." }
+
+  fun isProjectOrAppDataPath(dirSegments: List<String>): Boolean =
+    dirSegments.withIndex().any { (idx, seg) ->
+      val lower = seg.lowercase()
+      lower in PROJECT_OR_APP_DATA_SEGMENTS ||
+        (lower == "android" && idx > 0)
+    }
 
   fun resolve(
     sha256: String,
@@ -64,6 +85,7 @@ object DuplicateKeepPolicy {
       val entry: DuplicateFileEntry,
       val priorityIndex: Int,
       val normalizedPath: String,
+      val inProjectOrAppData: Boolean,
     )
 
     val ranked = entries.map { entry ->
@@ -88,6 +110,7 @@ object DuplicateKeepPolicy {
         entry = entry,
         priorityIndex = matchedIndex,
         normalizedPath = pathObj?.toString() ?: entry.path,
+        inProjectOrAppData = isProjectOrAppDataPath(dirSegments),
       )
     }.sortedWith(
       compareBy<RankedEntry> { it.priorityIndex }
@@ -97,13 +120,19 @@ object DuplicateKeepPolicy {
 
     val winner = ranked.first()
     val removables = ranked.drop(1).map { it.entry }
+    val hasPriorityMatch = winner.priorityIndex != Int.MAX_VALUE
+    val hasSamePriorityTie = hasPriorityMatch && (
+      ranked.count { it.priorityIndex == winner.priorityIndex } > 1 ||
+        ranked.any { it.inProjectOrAppData }
+      )
 
     return DuplicateGroupResolution(
       sha256 = sha256,
       sizeBytes = winner.entry.sizeBytes,
       keptEntry = winner.entry,
       removableEntries = removables,
-      hasPriorityMatch = winner.priorityIndex != Int.MAX_VALUE,
+      hasPriorityMatch = hasPriorityMatch,
+      hasSamePriorityTie = hasSamePriorityTie,
     )
   }
 

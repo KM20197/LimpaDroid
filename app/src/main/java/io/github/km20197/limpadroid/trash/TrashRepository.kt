@@ -13,7 +13,6 @@ import io.github.km20197.limpadroid.domain.fs.Hasher
 import io.github.km20197.limpadroid.domain.fs.MediaScannerHook
 import io.github.km20197.limpadroid.domain.fs.PathGuardResult
 import io.github.km20197.limpadroid.domain.fs.TrashStorage
-import io.github.km20197.limpadroid.domain.scan.rules.DuplicateKeepPolicy
 import io.github.km20197.limpadroid.domain.model.AppClock
 import io.github.km20197.limpadroid.domain.model.BatchTrashMoveSummary
 import io.github.km20197.limpadroid.domain.model.Candidate
@@ -29,13 +28,20 @@ import io.github.km20197.limpadroid.domain.model.TrashMetadataPayload
 import io.github.km20197.limpadroid.domain.model.TrashMoveResult
 import io.github.km20197.limpadroid.domain.model.TrashRestoreResult
 import io.github.km20197.limpadroid.domain.model.TrashStats
+import io.github.km20197.limpadroid.domain.scan.rules.DuplicateKeepPolicy
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 class TrashRepository(
   private val trashEntryDao: TrashEntryDao,
@@ -48,6 +54,7 @@ class TrashRepository(
   private val clock: AppClock = AppClock.System,
   private val scanCandidateDao: ScanCandidateDao? = null,
 ) {
+  private val mutex = Mutex()
 
   val inTrashEntries: Flow<List<TrashEntry>> =
     trashEntryDao.observeInTrashEntries().map { list -> list.map { it.toDomain() } }
@@ -77,8 +84,27 @@ class TrashRepository(
     candidate: Candidate,
     expectedSizeBytes: Long? = candidate.sizeBytes,
     expectedMtime: Long? = candidate.lastModified,
-    userExcludedPaths: Set<java.nio.file.Path> = emptySet(),
+    userExcludedPaths: Set<Path> = emptySet(),
     forceCopyFallback: Boolean = false,
+  ): TrashMoveResult = mutex.withLock {
+    moveToTrashUnlocked(
+      candidate = candidate,
+      expectedSizeBytes = expectedSizeBytes,
+      expectedMtime = expectedMtime,
+      userExcludedPaths = userExcludedPaths,
+      forceCopyFallback = forceCopyFallback,
+      scanMediaImmediately = true,
+    )
+  }
+
+  private suspend fun moveToTrashUnlocked(
+    candidate: Candidate,
+    expectedSizeBytes: Long? = candidate.sizeBytes,
+    expectedMtime: Long? = candidate.lastModified,
+    userExcludedPaths: Set<Path> = emptySet(),
+    forceCopyFallback: Boolean = false,
+    scanMediaImmediately: Boolean = true,
+    onBeforePostMovePersistenceForTest: (suspend () -> Unit)? = null,
   ): TrashMoveResult {
     val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
     val storageRoot = when (rootResolution) {
@@ -118,6 +144,7 @@ class TrashRepository(
       )
     }
 
+    var verifiedSha256: String? = null
     if (Files.isRegularFile(sourcePath, LinkOption.NOFOLLOW_LINKS)) {
       val currentSize = Files.size(sourcePath)
       val currentMtime = Files.getLastModifiedTime(sourcePath, LinkOption.NOFOLLOW_LINKS).toMillis()
@@ -139,6 +166,7 @@ class TrashRepository(
             "Arquivo modificado (hash SHA-256 divergente) antes da movimentação.",
           )
         }
+        verifiedSha256 = currentSha256
       }
     }
 
@@ -154,7 +182,7 @@ class TrashRepository(
       originalPath = sourcePath.toString(),
       trashPath = plannedTrashPath.toString(),
       sizeBytes = candidate.sizeBytes,
-      sha256 = null,
+      sha256 = verifiedSha256,
       originalMtime = candidate.lastModified,
       category = candidate.category.name,
       ruleId = candidate.ruleId,
@@ -164,11 +192,14 @@ class TrashRepository(
     )
     trashEntryDao.upsert(pendingEntity)
 
+    var daoMovedUpdated = false
+    var historyInserted = false
     return try {
       val movedInfo = trashStorage.moveToTrash(
         source = sourcePath,
         trashRoot = trashRoot,
         entryDir = entryDir,
+        precomputedSha256 = verifiedSha256,
         forceCopyFallback = forceCopyFallback,
         metadataBuilder = { dest, size, sha, mtime ->
           TrashMetadataPayload(
@@ -186,6 +217,8 @@ class TrashRepository(
         },
       )
 
+      onBeforePostMovePersistenceForTest?.invoke()
+
       trashEntryDao.updateMovedState(
         id = entryId,
         state = TrashEntryState.IN_TRASH.name,
@@ -195,6 +228,7 @@ class TrashRepository(
         originalMtime = movedInfo.originalMtime,
         failureReason = null,
       )
+      daoMovedUpdated = true
 
       operationHistoryDao.insert(
         OperationHistoryEntity(
@@ -206,11 +240,14 @@ class TrashRepository(
           detail = sourcePath.fileName?.toString(),
         ),
       )
+      historyInserted = true
 
-      mediaScannerHook.scanPaths(listOf(sourcePath.toString()))
+      if (scanMediaImmediately) {
+        mediaScannerHook.scanPaths(listOf(sourcePath.toString()))
+      }
       scanLogger.logEvent(
         "TRASH_MOVED",
-        "id=$entryId rule=${candidate.ruleId} bytes=${movedInfo.sizeBytes} path=${sourcePath}",
+        "id=$entryId rule=${candidate.ruleId} bytes=${movedInfo.sizeBytes} path=$sourcePath",
       )
 
       TrashMoveResult.Moved(
@@ -223,26 +260,136 @@ class TrashRepository(
         ).toDomain(),
       )
     } catch (t: Throwable) {
-      val reason = t.message ?: t.javaClass.simpleName
-      trashEntryDao.updateLifecycleState(
-        id = entryId,
-        state = TrashEntryState.FAILED.name,
-        restoredAt = null,
-        restoredPath = null,
-        purgedAt = null,
-        failureReason = reason,
-      )
-      scanLogger.logEvent("TRASH_MOVE_FAILED", "id=$entryId path=$sourcePath reason=$reason")
-      TrashMoveResult.Failed(reason)
+      withContext(NonCancellable) {
+        val sourceExists = Files.exists(sourcePath, LinkOption.NOFOLLOW_LINKS)
+        val payloadExists = Files.exists(plannedTrashPath, LinkOption.NOFOLLOW_LINKS)
+
+        if (!sourceExists && payloadExists) {
+          val recoveredSize = if (Files.isRegularFile(plannedTrashPath, LinkOption.NOFOLLOW_LINKS)) {
+            runCatching { Files.size(plannedTrashPath) }.getOrDefault(candidate.sizeBytes)
+          } else {
+            candidate.sizeBytes
+          }
+          val recoveredMtime = runCatching {
+            Files.getLastModifiedTime(plannedTrashPath, LinkOption.NOFOLLOW_LINKS).toMillis()
+          }.getOrDefault(candidate.lastModified)
+          val metadataPath = trashStorage.resolveMetadataPath(entryDir)
+          if (!Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS)) {
+            runCatching {
+              trashStorage.writeMetadata(
+                metadataPath,
+                TrashMetadataPayload(
+                  id = entryId,
+                  originalPath = sourcePath.toString(),
+                  trashPath = plannedTrashPath.toString(),
+                  sizeBytes = recoveredSize,
+                  sha256 = verifiedSha256,
+                  originalMtime = recoveredMtime,
+                  category = candidate.category.name,
+                  ruleId = candidate.ruleId,
+                  deletedAt = now,
+                  expiresAt = expiresAt,
+                ),
+              )
+            }
+          }
+
+          val promoted = if (daoMovedUpdated) {
+            true
+          } else {
+            runCatching {
+              trashEntryDao.updateMovedState(
+                id = entryId,
+                state = TrashEntryState.IN_TRASH.name,
+                trashPath = plannedTrashPath.toString(),
+                sizeBytes = recoveredSize,
+                sha256 = verifiedSha256,
+                originalMtime = recoveredMtime,
+                failureReason = null,
+              )
+            }.isSuccess
+          }
+
+          if (!historyInserted) {
+            runCatching {
+              operationHistoryDao.insert(
+                OperationHistoryEntity(
+                  operationType = OperationType.MOVE_TO_TRASH.name,
+                  category = candidate.category.name,
+                  itemCount = 1,
+                  totalBytes = recoveredSize,
+                  timestamp = now,
+                  detail = sourcePath.fileName?.toString(),
+                ),
+              )
+            }
+          }
+
+          if (scanMediaImmediately) {
+            runCatching { mediaScannerHook.scanPaths(listOf(sourcePath.toString())) }
+          }
+          scanLogger.logEvent(
+            "TRASH_MOVED_RECOVERED",
+            "id=$entryId rule=${candidate.ruleId} bytes=$recoveredSize path=$sourcePath promoted=$promoted",
+          )
+
+          if (t is CancellationException) {
+            throw t
+          }
+          if (promoted) {
+            return@withContext TrashMoveResult.Moved(
+              pendingEntity.copy(
+                state = TrashEntryState.IN_TRASH.name,
+                trashPath = plannedTrashPath.toString(),
+                sizeBytes = recoveredSize,
+                sha256 = verifiedSha256,
+                originalMtime = recoveredMtime,
+              ).toDomain(),
+            )
+          }
+          return@withContext TrashMoveResult.Failed(t.message ?: t.javaClass.simpleName)
+        }
+
+        if (sourceExists && payloadExists) {
+          runCatching { trashStorage.deleteTrashedPayload(trashRoot, plannedTrashPath) }
+        }
+
+        val reason = t.message ?: t.javaClass.simpleName
+        runCatching {
+          trashEntryDao.updateLifecycleState(
+            id = entryId,
+            state = TrashEntryState.FAILED.name,
+            restoredAt = null,
+            restoredPath = null,
+            purgedAt = null,
+            failureReason = reason,
+          )
+        }
+        scanLogger.logEvent("TRASH_MOVE_FAILED", "id=$entryId path=$sourcePath reason=$reason")
+        if (t is CancellationException) {
+          throw t
+        }
+        TrashMoveResult.Failed(reason)
+      }
     }
+  }
+
+  suspend fun moveToTrashForTestWithPostMoveHook(
+    candidate: Candidate,
+    onBeforePostMovePersistence: suspend () -> Unit,
+  ): TrashMoveResult = mutex.withLock {
+    moveToTrashUnlocked(
+      candidate = candidate,
+      onBeforePostMovePersistenceForTest = onBeforePostMovePersistence,
+    )
   }
 
   suspend fun moveCandidatesToTrash(
     records: List<ScanCandidateRecord>,
-    userExcludedPaths: Set<java.nio.file.Path> = emptySet(),
-  ): BatchTrashMoveSummary {
+    userExcludedPaths: Set<Path> = emptySet(),
+  ): BatchTrashMoveSummary = mutex.withLock {
     if (records.isEmpty()) {
-      return BatchTrashMoveSummary(
+      return@withLock BatchTrashMoveSummary(
         movedCandidateIds = emptyList(),
         movedBytes = 0L,
         staleOrSkippedCount = 0,
@@ -285,6 +432,7 @@ class TrashRepository(
     )
 
     val movedIds = mutableListOf<Long>()
+    val movedOriginalPaths = mutableListOf<String>()
     var movedBytes = 0L
     var staleOrSkipped = missingDuplicateCount + invariantBlocked.size
     var failed = 0
@@ -298,13 +446,15 @@ class TrashRepository(
 
     for (record in safeRecords.sortedByDescending { it.candidate.path.length }) {
       when (
-        val result = moveToTrash(
+        val result = moveToTrashUnlocked(
           candidate = record.candidate,
           userExcludedPaths = userExcludedPaths,
+          scanMediaImmediately = false,
         )
       ) {
         is TrashMoveResult.Moved -> {
           movedIds.add(record.id)
+          movedOriginalPaths.add(result.entry.originalPath)
           movedBytes += result.entry.sizeBytes
         }
         is TrashMoveResult.StaleCandidate, is TrashMoveResult.Rejected -> {
@@ -316,7 +466,11 @@ class TrashRepository(
       }
     }
 
-    return BatchTrashMoveSummary(
+    if (movedOriginalPaths.isNotEmpty()) {
+      runCatching { mediaScannerHook.scanPaths(movedOriginalPaths) }
+    }
+
+    BatchTrashMoveSummary(
       movedCandidateIds = movedIds,
       movedBytes = movedBytes,
       staleOrSkippedCount = staleOrSkipped,
@@ -326,16 +480,16 @@ class TrashRepository(
 
   suspend fun repairStaleMediaStore(
     records: List<ScanCandidateRecord>,
-    userExcludedPaths: Set<java.nio.file.Path> = emptySet(),
-  ): MediaStoreRepairSummary {
+    userExcludedPaths: Set<Path> = emptySet(),
+  ): MediaStoreRepairSummary = mutex.withLock {
     if (records.isEmpty()) {
-      return MediaStoreRepairSummary(repairedCandidateIds = emptyList(), rejectedOrExistingCount = 0)
+      return@withLock MediaStoreRepairSummary(repairedCandidateIds = emptyList(), rejectedOrExistingCount = 0)
     }
     val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
     val storageRoot = when (rootResolution) {
       is StorageRootResolution.Available -> rootResolution.rootPath
       is StorageRootResolution.Unavailable -> {
-        return MediaStoreRepairSummary(
+        return@withLock MediaStoreRepairSummary(
           repairedCandidateIds = emptyList(),
           rejectedOrExistingCount = records.size,
         )
@@ -377,7 +531,7 @@ class TrashRepository(
       scanLogger.logEvent("MEDIASTORE_REPAIRED", "count=${validRecords.size}")
     }
 
-    return MediaStoreRepairSummary(
+    MediaStoreRepairSummary(
       repairedCandidateIds = validRecords.map { it.id },
       rejectedOrExistingCount = skipped,
     )
@@ -386,30 +540,34 @@ class TrashRepository(
   suspend fun restoreEntry(
     entryId: String,
     forceCopyFallback: Boolean = false,
-  ): TrashRestoreResult {
+  ): TrashRestoreResult = mutex.withLock {
     val entity = trashEntryDao.getById(entryId)
-      ?: return TrashRestoreResult.MissingPayload("Entrada não encontrada na lixeira.")
+      ?: return@withLock TrashRestoreResult.MissingPayload("Entrada não encontrada na lixeira.")
     if (entity.state != TrashEntryState.IN_TRASH.name) {
-      return TrashRestoreResult.Rejected("Item não está mais disponível para restauração (${entity.state}).")
+      return@withLock TrashRestoreResult.Rejected("Item não está mais disponível para restauração (${entity.state}).")
     }
 
     val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
     val storageRoot = when (rootResolution) {
       is StorageRootResolution.Available -> rootResolution.rootPath
       is StorageRootResolution.Unavailable -> {
-        return TrashRestoreResult.Failed("Armazenamento indisponível: ${rootResolution.reason}")
+        return@withLock TrashRestoreResult.Failed("Armazenamento indisponível: ${rootResolution.reason}")
       }
     }
 
     val pathGuard = DefaultPathGuard(rawStorageRoot = storageRoot, applicationId = applicationId)
+    val trashRoot = trashStorage.resolveTrashRoot(pathGuard.storageRoot)
     val payloadPath = Paths.get(entity.trashPath)
-    if (!Files.exists(payloadPath, LinkOption.NOFOLLOW_LINKS)) {
-      return TrashRestoreResult.MissingPayload("Arquivo ausente na lixeira: ${entity.trashPath}")
-    }
 
-    return try {
+    return@withLock try {
+      val validated = trashStorage.validatePayloadPath(trashRoot, payloadPath)
+      if (!Files.exists(validated.payloadPath, LinkOption.NOFOLLOW_LINKS)) {
+        return@withLock TrashRestoreResult.MissingPayload("Arquivo ausente na lixeira: ${validated.payloadPath}")
+      }
+
       val restored = trashStorage.restoreFromTrash(
-        payloadPath = payloadPath,
+        trashRoot = trashRoot,
+        payloadPath = validated.payloadPath,
         desiredOriginalPath = Paths.get(entity.originalPath),
         originalMtime = entity.originalMtime,
         expectedSha256 = entity.sha256,
@@ -448,8 +606,10 @@ class TrashRepository(
         restoredPath = restoredPathStr,
       )
       TrashRestoreResult.Restored(entry = updated, restoredPath = restoredPathStr)
+    } catch (ce: CancellationException) {
+      throw ce
     } catch (se: SecurityException) {
-      val reason = se.message ?: "Destino de restauração bloqueado"
+      val reason = se.message ?: "Destino ou caminho da lixeira bloqueado"
       scanLogger.logEvent("TRASH_RESTORE_REJECTED", "id=$entryId reason=$reason")
       TrashRestoreResult.Rejected(reason)
     } catch (t: Throwable) {
@@ -459,11 +619,12 @@ class TrashRepository(
     }
   }
 
-  suspend fun deletePermanently(entryId: String): PurgeSummary {
-    val entity = trashEntryDao.getById(entryId) ?: return PurgeSummary(0, 0L)
-    if (entity.state != TrashEntryState.IN_TRASH.name) return PurgeSummary(0, 0L)
+  suspend fun deletePermanently(entryId: String): PurgeSummary = mutex.withLock {
+    val entity = trashEntryDao.getById(entryId) ?: return@withLock PurgeSummary(0, 0L)
+    if (entity.state != TrashEntryState.IN_TRASH.name) return@withLock PurgeSummary(0, 0L)
 
-    trashStorage.deleteTrashedPayload(Paths.get(entity.trashPath))
+    val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
+    trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entity.trashPath))
     val now = clock.nowMillis()
     trashEntryDao.updateLifecycleState(
       id = entryId,
@@ -484,20 +645,20 @@ class TrashRepository(
       ),
     )
     scanLogger.logEvent("TRASH_PURGED_MANUAL", "id=$entryId bytes=${entity.sizeBytes}")
-    return PurgeSummary(purgedCount = 1, freedBytes = entity.sizeBytes)
+    PurgeSummary(purgedCount = 1, freedBytes = entity.sizeBytes)
   }
 
-  suspend fun emptyTrash(): PurgeSummary {
+  suspend fun emptyTrash(): PurgeSummary = mutex.withLock {
     val active = trashEntryDao.getByState(TrashEntryState.IN_TRASH.name)
-    if (active.isEmpty()) return PurgeSummary(0, 0L)
+    if (active.isEmpty()) return@withLock PurgeSummary(0, 0L)
 
+    val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
     val now = clock.nowMillis()
     var freed = 0L
     var count = 0
     for (entry in active) {
-      runCatching {
-        trashStorage.deleteTrashedPayload(Paths.get(entry.trashPath))
-      }.onSuccess {
+      try {
+        trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entry.trashPath))
         trashEntryDao.updateLifecycleState(
           id = entry.id,
           state = TrashEntryState.PURGED.name,
@@ -508,6 +669,10 @@ class TrashRepository(
         )
         freed += entry.sizeBytes
         count += 1
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (t: Throwable) {
+        scanLogger.logEvent("TRASH_PURGE_ITEM_FAILED", "id=${entry.id} reason=${t.message}")
       }
     }
     if (count > 0) {
@@ -523,20 +688,20 @@ class TrashRepository(
       )
       scanLogger.logEvent("TRASH_EMPTIED", "count=$count bytes=$freed")
     }
-    return PurgeSummary(purgedCount = count, freedBytes = freed)
+    PurgeSummary(purgedCount = count, freedBytes = freed)
   }
 
-  suspend fun purgeExpired(): PurgeSummary {
+  suspend fun purgeExpired(): PurgeSummary = mutex.withLock {
     val now = clock.nowMillis()
     val expired = trashEntryDao.getExpiredEntries(now)
-    if (expired.isEmpty()) return PurgeSummary(0, 0L)
+    if (expired.isEmpty()) return@withLock PurgeSummary(0, 0L)
 
+    val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
     var freed = 0L
     var count = 0
     for (entry in expired) {
-      runCatching {
-        trashStorage.deleteTrashedPayload(Paths.get(entry.trashPath))
-      }.onSuccess {
+      try {
+        trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entry.trashPath))
         trashEntryDao.updateLifecycleState(
           id = entry.id,
           state = TrashEntryState.PURGED.name,
@@ -547,6 +712,10 @@ class TrashRepository(
         )
         freed += entry.sizeBytes
         count += 1
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (t: Throwable) {
+        scanLogger.logEvent("TRASH_EXPIRED_PURGE_REJECTED", "id=${entry.id} reason=${t.message}")
       }
     }
     if (count > 0) {
@@ -562,30 +731,61 @@ class TrashRepository(
       )
       scanLogger.logEvent("TRASH_PURGED_EXPIRED", "count=$count bytes=$freed")
     }
-    return PurgeSummary(purgedCount = count, freedBytes = freed)
+    PurgeSummary(purgedCount = count, freedBytes = freed)
   }
 
-  suspend fun reconcilePendingAndRebuildIndex() {
-    val pending = trashEntryDao.getByState(TrashEntryState.PENDING.name)
-    for (entry in pending) {
+  suspend fun reconcilePendingAndRebuildIndex() = mutex.withLock {
+    val trashRoot = resolveTrashRootOrNull()
+    val candidatesToReconcile =
+      trashEntryDao.getByState(TrashEntryState.PENDING.name) +
+        trashEntryDao.getByState(TrashEntryState.FAILED.name)
+
+    for (entry in candidatesToReconcile) {
+      val wasPending = entry.state == TrashEntryState.PENDING.name
       val source = Paths.get(entry.originalPath)
-      val payload = Paths.get(entry.trashPath)
+      val rawPayload = Paths.get(entry.trashPath)
+
+      val validatedPayload = if (trashRoot != null) {
+        runCatching { trashStorage.validatePayloadPath(trashRoot, rawPayload) }.getOrNull()
+      } else {
+        null
+      }
+
+      if (validatedPayload == null) {
+        if (wasPending) {
+          trashEntryDao.updateLifecycleState(
+            id = entry.id,
+            state = TrashEntryState.FAILED.name,
+            restoredAt = null,
+            restoredPath = null,
+            purgedAt = null,
+            failureReason = "Caminho da lixeira inválido na reconciliação.",
+          )
+          scanLogger.logEvent("TRASH_RECONCILED_INVALID_PATH", "id=${entry.id}")
+        }
+        continue
+      }
+
       val sourceExists = Files.exists(source, LinkOption.NOFOLLOW_LINKS)
-      val payloadExists = Files.exists(payload, LinkOption.NOFOLLOW_LINKS)
+      val payloadExists = Files.exists(validatedPayload.payloadPath, LinkOption.NOFOLLOW_LINKS)
 
       when {
         !sourceExists && payloadExists -> {
-          val entryDir = payload.parent
-          if (entryDir != null) {
-            val metadataPath = trashStorage.resolveMetadataPath(entryDir)
-            if (!Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS)) {
+          val recoveredSize = if (Files.isRegularFile(validatedPayload.payloadPath, LinkOption.NOFOLLOW_LINKS)) {
+            runCatching { Files.size(validatedPayload.payloadPath) }.getOrDefault(entry.sizeBytes)
+          } else {
+            entry.sizeBytes
+          }
+          val metadataPath = trashStorage.resolveMetadataPath(validatedPayload.entryDir)
+          if (!Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS)) {
+            runCatching {
               trashStorage.writeMetadata(
                 metadataPath,
                 TrashMetadataPayload(
                   id = entry.id,
                   originalPath = entry.originalPath,
-                  trashPath = entry.trashPath,
-                  sizeBytes = entry.sizeBytes,
+                  trashPath = validatedPayload.payloadPath.toString(),
+                  sizeBytes = recoveredSize,
                   sha256 = entry.sha256,
                   originalMtime = entry.originalMtime,
                   category = entry.category,
@@ -599,18 +799,18 @@ class TrashRepository(
           trashEntryDao.updateMovedState(
             id = entry.id,
             state = TrashEntryState.IN_TRASH.name,
-            trashPath = entry.trashPath,
-            sizeBytes = entry.sizeBytes,
+            trashPath = validatedPayload.payloadPath.toString(),
+            sizeBytes = recoveredSize,
             sha256 = entry.sha256,
             originalMtime = entry.originalMtime,
             failureReason = null,
           )
-          scanLogger.logEvent("TRASH_RECONCILED_PROMOTED", "id=${entry.id}")
+          scanLogger.logEvent("TRASH_RECONCILED_PROMOTED", "id=${entry.id} from=${entry.state}")
         }
 
         sourceExists && payloadExists -> {
-          // Falha durante cópia: preserva o original intacto e remove payload parcial.
-          runCatching { trashStorage.deleteTrashedPayload(payload) }
+          // Falha durante cópia: preserva o original intacto e remove payload parcial validado.
+          runCatching { trashStorage.deleteTrashedPayload(trashRoot!!, validatedPayload.payloadPath) }
           trashEntryDao.updateLifecycleState(
             id = entry.id,
             state = TrashEntryState.FAILED.name,
@@ -622,7 +822,7 @@ class TrashRepository(
           scanLogger.logEvent("TRASH_RECONCILED_ROLLED_BACK", "id=${entry.id}")
         }
 
-        else -> {
+        wasPending -> {
           trashEntryDao.updateLifecycleState(
             id = entry.id,
             state = TrashEntryState.FAILED.name,
@@ -637,9 +837,7 @@ class TrashRepository(
     }
 
     // Reconstrução de índice a partir de metadata.json (ex.: após atualização/reinstalação).
-    val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
-    if (rootResolution is StorageRootResolution.Available) {
-      val trashRoot = trashStorage.resolveTrashRoot(rootResolution.rootPath)
+    if (trashRoot != null) {
       val diskEntries = runCatching { trashStorage.scanRecoverableEntries(trashRoot) }.getOrDefault(emptyList())
       for (meta in diskEntries) {
         val existing = trashEntryDao.getById(meta.id)
@@ -663,6 +861,13 @@ class TrashRepository(
         }
       }
     }
+  }
+
+  private fun resolveTrashRootOrNull(): Path? {
+    val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage() as? StorageRootResolution.Available
+      ?: return null
+    val guard = DefaultPathGuard(rawStorageRoot = rootResolution.rootPath, applicationId = applicationId)
+    return trashStorage.resolveTrashRoot(guard.storageRoot)
   }
 
   private fun TrashEntryEntity.toDomain(): TrashEntry = TrashEntry(

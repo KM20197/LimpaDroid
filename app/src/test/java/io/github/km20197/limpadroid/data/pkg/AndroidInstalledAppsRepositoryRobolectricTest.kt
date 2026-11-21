@@ -173,8 +173,49 @@ class AndroidInstalledAppsRepositoryRobolectricTest {
     val candidates = scanRepo.observeCategoryCandidates(Category.ORPHAN).first()
     assertEquals(1, candidates.size)
     assertEquals(OrphanRuleId.ORPHAN_MEDIA_PKG.ruleId, candidates.single().candidate.ruleId)
+    assertEquals(io.github.km20197.limpadroid.domain.model.Confidence.MEDIUM, candidates.single().candidate.confidence)
+    assertEquals(false, candidates.single().candidate.preselected)
     assertEquals(11L, candidates.single().candidate.sizeBytes)
   }
+
+  @Test
+  fun `A3 syncKnownApps marks snapshot unreliable and preserves history on sudden package drop or failure`() =
+    runTest {
+      var now = 1_700_000_000_000L
+      val fullList = (1..12).map { idx ->
+        InstalledAppInfo("com.example.app$idx", "App $idx")
+      }
+      var mode = "FULL"
+      val repo = AndroidInstalledAppsRepository(
+        context = context,
+        knownAppDao = db.knownAppDao(),
+        clock = AppClock { now },
+        packagesReader = {
+          when (mode) {
+            "FULL" -> fullList
+            "DROP" -> listOf(fullList.first())
+            "THROW" -> throw IllegalStateException("PackageManager binder failed")
+            else -> emptyList()
+          }
+        },
+      )
+
+      val baseline = repo.syncKnownApps()
+      assertTrue(baseline.isReliable)
+      assertEquals(12, baseline.knownApps.size)
+
+      now += 60_000L
+      mode = "DROP"
+      val dropped = repo.syncKnownApps()
+      assertEquals(false, dropped.isReliable)
+      assertTrue(dropped.knownApps.all { it.removedAt == null })
+
+      mode = "THROW"
+      val failed = repo.syncKnownApps()
+      assertEquals(false, failed.isReliable)
+      assertTrue(failed.presentApps.isEmpty())
+      assertTrue(failed.knownApps.all { it.removedAt == null })
+    }
 
   @Test
   fun `MIGRATION_2_3 creates known_apps table cleanly on existing v2 database`() = runTest {

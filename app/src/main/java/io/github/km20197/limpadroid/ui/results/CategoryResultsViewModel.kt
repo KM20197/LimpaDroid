@@ -21,6 +21,7 @@ import java.nio.file.Paths
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -97,8 +98,16 @@ class CategoryResultsViewModel(
   val uiState: StateFlow<CategoryResultsUiState> = _uiState.asStateFlow()
 
   private var allRecords: List<ScanCandidateRecord> = emptyList()
+  private val isSubmittingCleanup = MutableStateFlow(false)
 
   init {
+    viewModelScope.launch {
+      combine(isSubmittingCleanup, trashController.isBatchCleanupRunning) { local, remote ->
+        local || remote
+      }.collect { processing ->
+        _uiState.update { it.copy(isProcessing = processing) }
+      }
+    }
     viewModelScope.launch {
       scanController.observeLatestSessionForCategory(category).collect { session ->
         _uiState.update { it.copy(latestSession = session) }
@@ -301,49 +310,44 @@ class CategoryResultsViewModel(
       _uiState.update { it.copy(isConfirmationVisible = false) }
       return
     }
-    _uiState.update { it.copy(isConfirmationVisible = false, isProcessing = true) }
+    _uiState.update { it.copy(isConfirmationVisible = false) }
+    isSubmittingCleanup.value = true
 
     viewModelScope.launch {
-      val excludedPaths = runCatching {
-        preferencesRepository.userExcludedPaths.first()
-          .mapNotNull { raw -> runCatching { Paths.get(raw) }.getOrNull() }
-          .toSet()
-      }.getOrDefault(emptySet())
+      try {
+        val excludedPaths = runCatching {
+          preferencesRepository.userExcludedPaths.first()
+            .mapNotNull { raw -> runCatching { Paths.get(raw) }.getOrNull() }
+            .toSet()
+        }.getOrDefault(emptySet())
 
-      val staleRecords = selected.filter {
-        it.candidate.ruleId == SuperfluousRuleId.STALE_MEDIASTORE.ruleId
-      }
-      val trashRecords = selected.filter {
-        it.candidate.ruleId != SuperfluousRuleId.STALE_MEDIASTORE.ruleId
-      }
-
-      val trashSummary = trashController.moveCandidatesToTrash(
-        records = trashRecords,
-        userExcludedPaths = excludedPaths,
-      )
-      val repairSummary = trashController.repairStaleMediaStore(
-        records = staleRecords,
-        userExcludedPaths = excludedPaths,
-      )
-
-      val cleanedIds = trashSummary.movedCandidateIds + repairSummary.repairedCandidateIds
-      val sessionId = _uiState.value.latestSession?.id ?: selected.firstOrNull()?.sessionId
-      scanController.removeCleanedCandidates(sessionId, cleanedIds)
-
-      val skippedOrFailed = trashSummary.staleOrSkippedCount +
-        trashSummary.failedCount +
-        repairSummary.rejectedOrExistingCount
-
-      _uiState.update {
-        it.copy(
-          isProcessing = false,
-          feedback = CategoryResultsFeedback.CleanupDone(
-            movedCount = trashSummary.movedCandidateIds.size,
-            movedBytes = trashSummary.movedBytes,
-            repairedMediaStoreCount = repairSummary.repairedCandidateIds.size,
-            skippedOrFailedCount = skippedOrFailed,
-          ),
+        val sessionId = _uiState.value.latestSession?.id ?: selected.firstOrNull()?.sessionId
+        val result = trashController.runBatchCleanup(
+          sessionId = sessionId,
+          records = selected,
+          userExcludedPaths = excludedPaths,
         )
+
+        if (!result.candidatesAlreadyRemovedFromRepo && result.cleanedCandidateIds.isNotEmpty()) {
+          scanController.removeCleanedCandidates(sessionId, result.cleanedCandidateIds)
+        }
+
+        val feedback = if (result.failed) {
+          CategoryResultsFeedback.Message(
+            result.errorMessage ?: "Não foi possível concluir a limpeza em segundo plano.",
+          )
+        } else {
+          CategoryResultsFeedback.CleanupDone(
+            movedCount = result.movedCount,
+            movedBytes = result.movedBytes,
+            repairedMediaStoreCount = result.repairedMediaStoreCount,
+            skippedOrFailedCount = result.skippedOrFailedCount,
+          )
+        }
+
+        _uiState.update { it.copy(feedback = feedback) }
+      } finally {
+        isSubmittingCleanup.value = false
       }
     }
   }

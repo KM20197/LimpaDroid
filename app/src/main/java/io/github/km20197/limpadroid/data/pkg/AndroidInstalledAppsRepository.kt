@@ -27,17 +27,45 @@ class AndroidInstalledAppsRepository(
 
   override suspend fun syncKnownApps(): InstalledAppsSnapshot = syncMutex.withLock {
     val now = clock.nowMillis()
-    val presentApps = withContext(Dispatchers.IO) {
-      runCatching { packagesReader() }.getOrDefault(emptyList())
+    val readOutcome = withContext(Dispatchers.IO) {
+      runCatching { packagesReader() }
     }
     val existing = knownAppDao.getAll().associateBy { it.packageName }
+    val existingDomain = existing.values.map { it.toDomain() }
+
+    val failure = readOutcome.exceptionOrNull()
+    if (failure != null) {
+      return@withLock InstalledAppsSnapshot(
+        presentApps = emptyList(),
+        knownApps = existingDomain,
+        isReliable = false,
+        failureReason = "Falha ao consultar pacotes instalados: ${failure.message ?: failure.javaClass.simpleName}",
+      )
+    }
+
+    val presentApps = readOutcome.getOrDefault(emptyList())
 
     // Salvaguarda: se PackageManager falhar ou retornar vazio (impossível pois o próprio app está presente),
     // não marca o histórico inteiro como removido.
     if (presentApps.isEmpty()) {
       return@withLock InstalledAppsSnapshot(
         presentApps = emptyList(),
-        knownApps = existing.values.map { it.toDomain() },
+        knownApps = existingDomain,
+        isReliable = false,
+        failureReason = "Lista de pacotes instalados retornou vazia; sincronização ignorada.",
+      )
+    }
+
+    // Salvaguarda A3: queda abrupta em relação aos pacotes ativos conhecidos indica listagem parcial/falha
+    val activeHistoricalCount = existing.values.count { it.removedAt == null }
+    if (activeHistoricalCount >= MIN_HISTORY_FOR_DROP_CHECK &&
+      presentApps.size * 2 < activeHistoricalCount
+    ) {
+      return@withLock InstalledAppsSnapshot(
+        presentApps = presentApps,
+        knownApps = existingDomain,
+        isReliable = false,
+        failureReason = "Queda anômala de pacotes instalados (${presentApps.size} atuais vs. $activeHistoricalCount ativos); histórico preservado.",
       )
     }
 
@@ -73,17 +101,38 @@ class AndroidInstalledAppsRepository(
     return@withLock InstalledAppsSnapshot(
       presentApps = presentApps,
       knownApps = updatedEntities.map { it.toDomain() },
+      isReliable = true,
     )
   }
 
   override suspend fun loadSnapshot(): InstalledAppsSnapshot {
-    val presentApps = withContext(Dispatchers.IO) {
-      runCatching { packagesReader() }.getOrDefault(emptyList())
+    val readOutcome = withContext(Dispatchers.IO) {
+      runCatching { packagesReader() }
     }
     val knownApps = knownAppDao.getAll().map { it.toDomain() }
+    val failure = readOutcome.exceptionOrNull()
+    if (failure != null) {
+      return InstalledAppsSnapshot(
+        presentApps = emptyList(),
+        knownApps = knownApps,
+        isReliable = false,
+        failureReason = "Falha ao consultar pacotes instalados: ${failure.message ?: failure.javaClass.simpleName}",
+      )
+    }
+    val presentApps = readOutcome.getOrDefault(emptyList())
+    val activeHistoricalCount = knownApps.count { it.removedAt == null }
+    val isReliable = presentApps.isNotEmpty() &&
+      !(activeHistoricalCount >= MIN_HISTORY_FOR_DROP_CHECK && presentApps.size * 2 < activeHistoricalCount)
+    val failureReason = when {
+      presentApps.isEmpty() -> "Lista de pacotes instalados retornou vazia."
+      !isReliable -> "Queda anômala de pacotes instalados (${presentApps.size} atuais vs. $activeHistoricalCount ativos)."
+      else -> null
+    }
     return InstalledAppsSnapshot(
       presentApps = presentApps,
       knownApps = knownApps,
+      isReliable = isReliable,
+      failureReason = failureReason,
     )
   }
 
@@ -96,6 +145,7 @@ class AndroidInstalledAppsRepository(
   )
 
   companion object {
+    const val MIN_HISTORY_FOR_DROP_CHECK = 10
     fun readPresentPackages(context: Context): List<InstalledAppInfo> {
       val pm = context.packageManager
       val packages: List<PackageInfo> = queryInstalledPackageInfos(pm)

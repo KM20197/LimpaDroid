@@ -35,6 +35,7 @@ import io.github.km20197.limpadroid.domain.scan.rules.WhatsAppScanSettings
 import io.github.km20197.limpadroid.scan.ScanController
 import io.github.km20197.limpadroid.scan.ScanWorkerDependencies
 import io.github.km20197.limpadroid.scan.WorkManagerScanController
+import io.github.km20197.limpadroid.trash.TrashCleanupDependencies
 import io.github.km20197.limpadroid.trash.TrashController
 import io.github.km20197.limpadroid.trash.TrashRepository
 import io.github.km20197.limpadroid.trash.WorkManagerTrashController
@@ -48,6 +49,7 @@ interface AppContainer {
   val scanController: ScanController
   val scanWorkerDependencies: ScanWorkerDependencies
   val trashRepository: TrashRepository
+  val trashCleanupDependencies: TrashCleanupDependencies
   val trashController: TrashController
   val installedAppsRepository: InstalledAppsRepository
 }
@@ -190,10 +192,24 @@ class DefaultAppContainer(
     )
   }
 
+  private val cleanupJobsDir: File by lazy {
+    File(context.filesDir, WorkManagerTrashController.CLEANUP_JOBS_DIR_NAME)
+  }
+
+  override val trashCleanupDependencies: TrashCleanupDependencies by lazy {
+    TrashCleanupDependencies(
+      trashRepository = trashRepository,
+      scanRepository = scanRepository,
+      scanLogger = scanLogger,
+      cleanupJobsDir = cleanupJobsDir,
+    )
+  }
+
   override val trashController: TrashController by lazy {
     WorkManagerTrashController(
       context = context,
       trashRepository = trashRepository,
+      cleanupJobsDir = cleanupJobsDir,
     )
   }
 }

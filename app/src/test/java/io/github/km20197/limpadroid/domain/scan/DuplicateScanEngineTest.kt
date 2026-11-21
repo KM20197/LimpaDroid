@@ -189,6 +189,31 @@ class DuplicateScanEngineTest {
     assertTrue(Files.exists(f2))
   }
 
+  @Test
+  fun `M7 duplicates tied in same priority tier or project folder receive MEDIUM and stay unselected`() = runTest {
+    val root = tempFolder.newFolder("tie_root").toPath().toRealPath()
+    val projADir = Files.createDirectories(root.resolve("Documents/AppA"))
+    val projBDir = Files.createDirectories(root.resolve("Documents/AppB"))
+    val payload = ByteArray(4_096) { 0x3A }
+    val copy1 = Files.write(projADir.resolve("config.json"), payload)
+    val copy2 = Files.write(projBDir.resolve("config.json"), payload)
+    Files.setLastModifiedTime(copy1, FileTime.fromMillis(1_000L))
+    Files.setLastModifiedTime(copy2, FileTime.fromMillis(2_000L))
+
+    val engine = DuplicateScanEngine()
+    val config = ScanConfig(
+      sessionId = "s-tie",
+      scope = ScanScope.DUPLICATE,
+      rootPath = root,
+      pathGuard = DefaultPathGuard(root, "io.github.km20197.limpadroid"),
+    )
+
+    val found = engine.scan(config).toList().filterIsInstance<ScanEvent.Found>()
+    assertEquals(2, found.size)
+    assertTrue(found.all { it.candidate.confidence == Confidence.MEDIUM })
+    assertTrue(found.none { it.candidate.preselected })
+  }
+
   private class InMemoryHashCacheRepository : HashCacheRepository {
     val storage = LinkedHashMap<String, CachedHashEntry>()
     var upsertCalls = 0

@@ -82,6 +82,7 @@ class OrphanDirectoryClassifier(
     if (isLimpaDroidOwnFolder(relativeSegments)) return null
 
     // Regra 7.3.a: Android/media/<packageName>
+    // Classifica como HIGH somente quando há aplicativo removido confirmado no histórico; caso contrário, MEDIUM desmarcado.
     if (relativeSegments.size == 3 &&
       relativeSegments[0].equals("Android", ignoreCase = true) &&
       relativeSegments[1].equals("media", ignoreCase = true)
@@ -89,19 +90,20 @@ class OrphanDirectoryClassifier(
       if (!AppIdentifierNormalizer.isPackageFormat(folderName)) return null
       val lower = folderName.lowercase(Locale.ROOT)
       if (lower in presentPackagesLower) return null
+      val matchedRemoved = removedByPackageLower[lower]
       return OrphanMatch(
         ruleId = OrphanRuleId.ORPHAN_MEDIA_PKG,
-        confidence = Confidence.HIGH,
-        matchedApp = removedByPackageLower[lower],
+        confidence = if (matchedRemoved != null) Confidence.HIGH else Confidence.MEDIUM,
+        matchedApp = matchedRemoved,
       )
     }
 
+    // M6: restringe ORPHAN_ROOT_KNOWN e ORPHAN_ROOT_PATTERN apenas a filhos diretos da raiz,
+    // preservando pastas de conteúdo pessoal do usuário (Documents, Pictures, Movies, Music, Download).
     val isEligibleRootChild = relativeSegments.size == 1 &&
       folderName.lowercase(Locale.ROOT) !in PROTECTED_ROOT_DIRS
-    val isEligibleKnownParentChild = relativeSegments.size == 2 &&
-      relativeSegments[0].lowercase(Locale.ROOT) in KNOWN_ROOT_SUBPARENTS
 
-    if (!isEligibleRootChild && !isEligibleKnownParentChild) {
+    if (!isEligibleRootChild) {
       return null
     }
 
@@ -115,7 +117,7 @@ class OrphanDirectoryClassifier(
       return null
     }
 
-    // Regra 7.3.b: Pasta na raiz ou em Documents/Pictures/Movies/Music/Download conhecida em known_apps removidos
+    // Regra 7.3.b: Pasta na raiz conhecida em known_apps removidos
     val matchedKnown = removedByNormalizedIdentifier[normalizedFolder]
     if (matchedKnown != null) {
       return OrphanMatch(
@@ -126,7 +128,7 @@ class OrphanDirectoryClassifier(
     }
 
     // Regra 7.3.c: Pasta na raiz com formato de pacote e ausente dos pacotes presentes
-    if (isEligibleRootChild && AppIdentifierNormalizer.isPackageFormat(folderName)) {
+    if (AppIdentifierNormalizer.isPackageFormat(folderName)) {
       return OrphanMatch(
         ruleId = OrphanRuleId.ORPHAN_ROOT_PATTERN,
         confidence = Confidence.LOW,
@@ -156,13 +158,6 @@ class OrphanDirectoryClassifier(
   }
 
   companion object {
-    val KNOWN_ROOT_SUBPARENTS: Set<String> = setOf(
-      "documents",
-      "pictures",
-      "movies",
-      "music",
-      "download",
-    )
 
     val PROTECTED_ROOT_DIRS: Set<String> = setOf(
       "dcim",

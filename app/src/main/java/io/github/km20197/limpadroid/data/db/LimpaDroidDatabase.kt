@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     KnownAppEntity::class,
   ],
   version = 4,
-  exportSchema = false,
+  exportSchema = true,
 )
 abstract class LimpaDroidDatabase : RoomDatabase() {
   abstract fun scanSessionDao(): ScanSessionDao

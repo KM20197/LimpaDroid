@@ -957,6 +957,14 @@ class LimpaDroidRobolectricTest {
         applicationId = "io.github.km20197.limpadroid",
       )
 
+    override val trashCleanupDependencies: io.github.km20197.limpadroid.trash.TrashCleanupDependencies =
+      io.github.km20197.limpadroid.trash.TrashCleanupDependencies(
+        trashRepository = trashRepository,
+        scanRepository = scanRepository,
+        scanLogger = scanLogger,
+        cleanupJobsDir = java.io.File(rootPath.toFile(), ".cleanup_jobs"),
+      )
+
     override val trashController: TrashController = object : TrashController {
       override val inTrashEntries: Flow<List<TrashEntry>> = trashRepository.inTrashEntries
       override val trashStats: Flow<TrashStats> = trashRepository.trashStats

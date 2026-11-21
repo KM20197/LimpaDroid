@@ -5,6 +5,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import io.github.km20197.limpadroid.LimpaDroidApp
 
+import kotlinx.coroutines.CancellationException
+
 class PurgeWorker(
   appContext: Context,
   params: WorkerParameters,
@@ -22,6 +24,8 @@ class PurgeWorker(
       repository.reconcilePendingAndRebuildIndex()
       repository.purgeExpired()
       Result.success()
+    } catch (ce: CancellationException) {
+      throw ce
     } catch (_: Throwable) {
       Result.retry()
     }
