@@ -76,7 +76,7 @@ Este documento registra as verificações prévias da Seção 12 do Plano de Des
 - **A3 (proteção na detecção de órfãos):** `AndroidInstalledAppsRepository` sinaliza `isReliable = false` em falhas de consulta ao `PackageManager`, conjunto vazio ou queda brusca em relação ao histórico ativo em `known_apps` sem marcar aplicativos existentes como removidos; `OrphanScanEngine` aborta a varredura quando `isReliable == false`. `ORPHAN_MEDIA_PKG` recebe confiança `HIGH` (`preselected = true`) somente quando há correspondência em `known_apps` com `removedAt` definido; caso contrário recebe `MEDIUM` (`preselected = false`).
 - **A4 (exclusão mútua nas operações da lixeira):** `TrashRepository` serializa movimentação, restauração, exclusão definitiva, esvaziamento, expurgo e reconciliação/reconstrução com um `Mutex` único.
 
-### 3.2 Riscos médios corrigidos e pendência M8
+### 3.2 Riscos médios corrigidos e confirmação M8
 - **M1:** Restauração move sem `REPLACE_EXISTING` e reitera sufixos `(restaurado)` diante de `FileAlreadyExistsException`.
 - **M2:** Cópia de contingência na lixeira valida espaço livre via `Files.getFileStore(...).usableSpace` antes de copiar e retorna erro claro quando insuficiente.
 - **M3:** O cálculo integral de SHA-256 ocorre apenas quando necessário (validação de duplicados com reuso do cache/hash já verificado ou cópia de contingência), e `MediaScannerConnection.scanFile` é invocado em lote único ao fim da operação em `moveCandidatesToTrash`.
@@ -84,7 +84,7 @@ Este documento registra as verificações prévias da Seção 12 do Plano de Des
 - **M5:** Limpeza de lotes confirmados em `CategoryResultsScreen` passou a executar via `TrashCleanupWorker` no `WorkManager` (com `ForegroundInfo` tipo `dataSync`) e arquivo de parâmetros em `filesDir/cleanup_jobs`, sobrevivendo à saída da tela ou cancelamento do `viewModelScope`.
 - **M6:** `ORPHAN_ROOT_KNOWN` deixou de inspecionar subpastas diretas de `Documents`, `Pictures`, `Movies`, `Music` e `Download`, restringindo-se a pastas diretas na raiz do armazenamento compartilhado.
 - **M7:** Duplicados com empate no mesmo nível de prioridade ou contendo caminho em diretórios de projeto/dados de app (ex.: `.git`, `build`, `node_modules`, `android` aninhado) são rebaixados para confiança `MEDIUM` e mantidos desmarcados.
-- **M8 (pendente de confirmação explícita do solicitante):** `minSdk = 30` e raiz da lixeira em `Documents/LimpaDroid/.lixeira` permanecem em uso conforme Seção 2 desta nota, aguardando confirmação formal do Ricardo caso deseje retorno ao plano original (`minSdk = 37` e `Android/media/<applicationId>/.lixeira`).
+- **M8 (confirmado pelo solicitante em 21/11/2026):** Ricardo confirmou a manutenção das duas definições da Seção 2 desta nota: `minSdk = 30` (compatibilidade com Android 11+) e raiz da lixeira em `Documents/LimpaDroid/.lixeira`.
 
 ### 3.3 Riscos baixos
 - **Tratados no código:** `PurgeWorker` propaga `CancellationException` em vez de converter em `Result.retry()`; `LimpaDroidDatabase` habilitou `exportSchema = true` com geração de `app/schemas/.../4.json` via KSP e teste automatizado de correspondência com o banco em execução; adicionados testes automatizados para `A1`–`A4`, `M1`–`M7`, cancelamento de `PurgeWorker`/`WorkManager` e metadados adulterados.
