@@ -648,6 +648,42 @@ fun SettingsScreen(
             }
           }
         }
+
+        item {
+          Text(
+            text = stringResource(R.string.settings_about_section),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+              .fillMaxWidth()
+              .widthIn(max = 900.dp)
+              .padding(top = 6.dp)
+              .semantics { heading() },
+          )
+        }
+
+        item {
+          OutlinedCard(
+            modifier = Modifier
+              .fillMaxWidth()
+              .widthIn(max = 900.dp)
+              .testTag("settings_license_card"),
+          ) {
+            Column(
+              modifier = Modifier.padding(14.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Text(
+                text = stringResource(R.string.settings_license_title),
+                style = MaterialTheme.typography.titleSmall,
+              )
+              Text(
+                text = stringResource(R.string.settings_license_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
       }
     }
   }

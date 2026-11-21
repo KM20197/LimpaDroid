@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoDelete
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
@@ -41,11 +43,13 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -70,7 +74,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -79,8 +85,10 @@ import io.github.km20197.limpadroid.R
 import io.github.km20197.limpadroid.domain.format.ByteFormatter
 import io.github.km20197.limpadroid.domain.model.Category
 import io.github.km20197.limpadroid.domain.model.CategorySummary
+import io.github.km20197.limpadroid.domain.model.OverallCleanupOverview
 import io.github.km20197.limpadroid.domain.model.ScanSession
 import io.github.km20197.limpadroid.domain.model.ScanStatus
+import io.github.km20197.limpadroid.ui.results.CategoryResultsFeedback
 import io.github.km20197.limpadroid.ui.theme.MonoPathTextStyle
 import java.util.Locale
 import kotlinx.coroutines.launch
@@ -88,9 +96,7 @@ import kotlinx.coroutines.launch
 private data class CategoryOverviewItem(
   val category: Category,
   val titleRes: Int,
-  val descRes: Int,
   val icon: ImageVector,
-  val tag: String,
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -110,11 +116,52 @@ fun HomeScreen(
   val scope = rememberCoroutineScope()
   val hintMessage = stringResource(R.string.home_version_hint)
   val storageErrorFormat = stringResource(R.string.home_scan_storage_error, uiState.scanActionMessage.orEmpty())
+  val doneTrashAndMediaFormat = stringResource(R.string.results_feedback_cleanup_done)
+  val doneMediaOnlyFormat = stringResource(R.string.results_feedback_mediastore_only)
+  val skippedSuffixFormat = stringResource(R.string.results_feedback_skipped_suffix)
 
   LaunchedEffect(uiState.scanActionMessage) {
     if (uiState.scanActionMessage != null) {
       snackbarHostState.showSnackbar(storageErrorFormat)
       viewModel.clearScanActionMessage()
+    }
+  }
+
+  LaunchedEffect(uiState.totalCleanupFeedback) {
+    val msg = when (val fb = uiState.totalCleanupFeedback) {
+      is CategoryResultsFeedback.CleanupDone -> {
+        val base = if (fb.movedCount > 0) {
+          String.format(
+            Locale.getDefault(),
+            doneTrashAndMediaFormat,
+            fb.movedCount,
+            ByteFormatter.format(fb.movedBytes),
+          )
+        } else {
+          String.format(
+            Locale.getDefault(),
+            doneMediaOnlyFormat,
+            fb.repairedMediaStoreCount,
+          )
+        }
+        val mediaNote = if (fb.movedCount > 0 && fb.repairedMediaStoreCount > 0) {
+          " " + String.format(Locale.getDefault(), doneMediaOnlyFormat, fb.repairedMediaStoreCount)
+        } else {
+          ""
+        }
+        val skippedNote = if (fb.skippedOrFailedCount > 0) {
+          " " + String.format(Locale.getDefault(), skippedSuffixFormat, fb.skippedOrFailedCount)
+        } else {
+          ""
+        }
+        base + mediaNote + skippedNote
+      }
+      is CategoryResultsFeedback.Message -> fb.text
+      null -> null
+    }
+    if (msg != null) {
+      snackbarHostState.showSnackbar(msg)
+      viewModel.clearTotalCleanupFeedback()
     }
   }
 
@@ -134,35 +181,35 @@ fun HomeScreen(
     viewModel.refreshPermissions()
   }
 
+  if (uiState.isTotalCleanupConfirmationVisible) {
+    TotalCleanupConfirmationDialog(
+      overview = uiState.cleanupOverview,
+      onConfirm = viewModel::confirmTotalCleanup,
+      onDismiss = viewModel::dismissTotalCleanupConfirmation,
+    )
+  }
+
   val categories = remember {
     listOf(
       CategoryOverviewItem(
         category = Category.SUPERFLUOUS,
         titleRes = R.string.cat_superfluous_title,
-        descRes = R.string.cat_superfluous_desc,
         icon = Icons.Filled.CleaningServices,
-        tag = "card_category_superfluous",
       ),
       CategoryOverviewItem(
         category = Category.ORPHAN,
         titleRes = R.string.cat_orphan_title,
-        descRes = R.string.cat_orphan_desc,
         icon = Icons.Filled.FolderOff,
-        tag = "card_category_orphan",
       ),
       CategoryOverviewItem(
         category = Category.DUPLICATE,
         titleRes = R.string.cat_duplicate_title,
-        descRes = R.string.cat_duplicate_desc,
         icon = Icons.Filled.ContentCopy,
-        tag = "card_category_duplicate",
       ),
       CategoryOverviewItem(
         category = Category.WHATSAPP,
         titleRes = R.string.cat_whatsapp_title,
-        descRes = R.string.cat_whatsapp_desc,
         icon = Icons.Filled.Forum,
-        tag = "card_category_whatsapp",
       ),
     )
   }
@@ -207,7 +254,7 @@ fun HomeScreen(
         .fillMaxSize()
         .padding(innerPadding),
     ) {
-      val useTwoColumns = maxWidth >= 600.dp
+      val useCompactStack = maxWidth < 360.dp
       Column(
         modifier = Modifier
           .fillMaxSize()
@@ -268,73 +315,61 @@ fun HomeScreen(
             }
           }
 
-          ScanInfrastructureCard(
+          PrimaryActionsHeroCard(
             hasAllFilesAccess = uiState.hasAllFilesAccess,
             session = uiState.latestScanSession,
-            onStart = viewModel::startInfrastructureScan,
-            onPause = viewModel::pauseActiveScan,
-            onResume = viewModel::resumePausedScan,
-            onCancel = viewModel::cancelActiveOrPausedScan,
-            onOpenDetails = onOpenScanDetails,
+            overview = uiState.cleanupOverview,
+            isCleanupRunning = uiState.isCleanupRunning,
+            useCompactStack = useCompactStack,
+            onStartScan = viewModel::startFullScan,
+            onPauseScan = viewModel::pauseActiveScan,
+            onResumeScan = viewModel::resumePausedScan,
+            onCancelScan = viewModel::cancelActiveOrPausedScan,
+            onRequestTotalCleanup = viewModel::requestTotalCleanup,
+            onOpenScanDetails = onOpenScanDetails,
           )
 
-          val isScanBusy = uiState.latestScanSession?.status == ScanStatus.RUNNING
           fun summaryFor(cat: Category): CategorySummary = when (cat) {
             Category.SUPERFLUOUS -> uiState.superfluousSummary
             Category.ORPHAN -> uiState.orphanSummary
             Category.DUPLICATE -> uiState.duplicateSummary
             Category.WHATSAPP -> uiState.whatsappSummary
           }
-          fun isCategoryReady(cat: Category): Boolean = true
 
-          if (useTwoColumns) {
-            categories.chunked(2).forEach { pair ->
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+          OutlinedCard(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("card_categories_summary"),
+          ) {
+            Column(
+              modifier = Modifier.padding(top = 14.dp, bottom = 4.dp),
+            ) {
+              Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
               ) {
-                pair.forEach { item ->
-                  val ready = isCategoryReady(item.category)
-                  CategoryOverviewCard(
-                    item = item,
-                    summary = summaryFor(item.category),
-                    hasAllFilesAccess = uiState.hasAllFilesAccess,
-                    isScanBusy = isScanBusy,
-                    onAnalyze = if (ready) {
-                      { viewModel.startCategoryScan(item.category) }
-                    } else {
-                      null
-                    },
-                    onOpenResults = if (ready) {
-                      { onOpenCategoryResults(item.category) }
-                    } else {
-                      null
-                    },
-                    modifier = Modifier.weight(1f),
-                  )
-                }
+                Text(
+                  text = stringResource(R.string.home_categories_section_title),
+                  style = MaterialTheme.typography.titleMedium,
+                  modifier = Modifier.semantics { heading() },
+                )
+                Text(
+                  text = stringResource(R.string.home_categories_section_hint),
+                  style = MaterialTheme.typography.labelMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
               }
-            }
-          } else {
-            categories.forEach { item ->
-              val ready = isCategoryReady(item.category)
-              CategoryOverviewCard(
-                item = item,
-                summary = summaryFor(item.category),
-                hasAllFilesAccess = uiState.hasAllFilesAccess,
-                isScanBusy = isScanBusy,
-                onAnalyze = if (ready) {
-                  { viewModel.startCategoryScan(item.category) }
-                } else {
-                  null
-                },
-                onOpenResults = if (ready) {
-                  { onOpenCategoryResults(item.category) }
-                } else {
-                  null
-                },
-                modifier = Modifier.fillMaxWidth(),
-              )
+              Spacer(modifier = Modifier.height(6.dp))
+              categories.forEachIndexed { index, item ->
+                if (index > 0) {
+                  HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                }
+                CategorySummaryRow(
+                  item = item,
+                  summary = summaryFor(item.category),
+                  onOpenResults = { onOpenCategoryResults(item.category) },
+                )
+              }
             }
           }
 
@@ -362,6 +397,7 @@ fun HomeScreen(
                 Text(
                   text = stringResource(R.string.home_trash_title),
                   style = MaterialTheme.typography.titleMedium,
+                  modifier = Modifier.semantics { heading() },
                 )
               }
               Text(
@@ -412,7 +448,7 @@ fun HomeScreen(
             }
           }
 
-          Spacer(modifier = Modifier.height(8.dp))
+          Spacer(modifier = Modifier.height(4.dp))
 
           Surface(
             shape = MaterialTheme.shapes.small,
@@ -434,11 +470,12 @@ fun HomeScreen(
               .semantics(mergeDescendants = true) {}
               .testTag("version_diagnostic_trigger"),
           ) {
-            Box(
+            Column(
               modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-              contentAlignment = Alignment.Center,
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
               Text(
                 text = stringResource(
@@ -447,6 +484,11 @@ fun HomeScreen(
                   uiState.versionCode,
                 ),
                 style = MonoPathTextStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Text(
+                text = stringResource(R.string.home_license_footer),
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
             }
@@ -459,15 +501,22 @@ fun HomeScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScanInfrastructureCard(
+private fun PrimaryActionsHeroCard(
   hasAllFilesAccess: Boolean,
   session: ScanSession?,
-  onStart: () -> Unit,
-  onPause: () -> Unit,
-  onResume: () -> Unit,
-  onCancel: () -> Unit,
-  onOpenDetails: () -> Unit,
+  overview: OverallCleanupOverview,
+  isCleanupRunning: Boolean,
+  useCompactStack: Boolean,
+  onStartScan: () -> Unit,
+  onPauseScan: () -> Unit,
+  onResumeScan: () -> Unit,
+  onCancelScan: () -> Unit,
+  onRequestTotalCleanup: () -> Unit,
+  onOpenScanDetails: () -> Unit,
 ) {
+  val isScanBusy = session?.status == ScanStatus.RUNNING
+  val isScanPaused = session?.status == ScanStatus.PAUSED
+
   ElevatedCard(
     modifier = Modifier
       .fillMaxWidth()
@@ -475,7 +524,7 @@ private fun ScanInfrastructureCard(
   ) {
     Column(
       modifier = Modifier.padding(16.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -498,11 +547,21 @@ private fun ScanInfrastructureCard(
         Text(
           text = stringResource(R.string.home_scan_card_title),
           style = MaterialTheme.typography.titleMedium,
-          modifier = Modifier.weight(1f),
+          modifier = Modifier
+            .weight(1f)
+            .semantics { heading() },
         )
         if (session != null) {
           ScanStatusBadge(status = session.status)
         }
+      }
+
+      if (isScanBusy || isCleanupRunning) {
+        LinearProgressIndicator(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("home_scan_progress"),
+        )
       }
 
       if (session == null) {
@@ -512,13 +571,6 @@ private fun ScanInfrastructureCard(
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       } else {
-        if (session.status == ScanStatus.RUNNING) {
-          LinearProgressIndicator(
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("home_scan_progress"),
-          )
-        }
         Text(
           text = stringResource(
             R.string.home_scan_metrics_format,
@@ -531,14 +583,52 @@ private fun ScanInfrastructureCard(
           color = MaterialTheme.colorScheme.onSurface,
           modifier = Modifier.testTag("home_scan_metrics"),
         )
-        session.lastProcessedPath?.let { path ->
-          Text(
-            text = path,
-            style = MonoPathTextStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-          )
+        if (isScanBusy || isScanPaused) {
+          session.lastProcessedPath?.let { path ->
+            Text(
+              text = path,
+              style = MonoPathTextStyle,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
         }
+      }
+
+      if (isCleanupRunning) {
+        Text(
+          text = stringResource(R.string.home_cleanup_in_progress),
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.primary,
+        )
+      } else if (overview.hasPreselected) {
+        val baseReady = stringResource(
+          R.string.home_cleanup_ready_summary_format,
+          overview.preselectedCount,
+          ByteFormatter.format(overview.preselectedTrashBytes),
+        )
+        val manualSuffix = if (overview.manualReviewCount > 0) {
+          stringResource(R.string.home_cleanup_manual_suffix_format, overview.manualReviewCount)
+        } else {
+          ""
+        }
+        Text(
+          text = baseReady + manualSuffix,
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.testTag("home_cleanup_ready_summary"),
+        )
+      } else if (overview.hasAnyCandidates) {
+        Text(
+          text = stringResource(
+            R.string.home_cleanup_manual_only_hint_format,
+            overview.totalCandidatesCount,
+          ),
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.testTag("home_cleanup_manual_only_hint"),
+        )
       }
 
       if (!hasAllFilesAccess) {
@@ -549,14 +639,14 @@ private fun ScanInfrastructureCard(
         )
       }
 
-      FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        when (session?.status) {
-          ScanStatus.RUNNING -> {
+      if (isScanBusy || isScanPaused) {
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          if (isScanBusy) {
             FilledTonalButton(
-              onClick = onPause,
+              onClick = onPauseScan,
               modifier = Modifier
                 .heightIn(min = 48.dp)
                 .testTag("home_pause_scan_button"),
@@ -565,21 +655,9 @@ private fun ScanInfrastructureCard(
               Spacer(modifier = Modifier.size(6.dp))
               Text(stringResource(R.string.home_scan_pause))
             }
-            OutlinedButton(
-              onClick = onCancel,
-              modifier = Modifier
-                .heightIn(min = 48.dp)
-                .testTag("home_cancel_scan_button"),
-            ) {
-              Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-              Spacer(modifier = Modifier.size(6.dp))
-              Text(stringResource(R.string.home_scan_cancel))
-            }
-          }
-
-          ScanStatus.PAUSED -> {
+          } else {
             Button(
-              onClick = onResume,
+              onClick = onResumeScan,
               enabled = hasAllFilesAccess,
               modifier = Modifier
                 .heightIn(min = 48.dp)
@@ -589,50 +667,223 @@ private fun ScanInfrastructureCard(
               Spacer(modifier = Modifier.size(6.dp))
               Text(stringResource(R.string.home_scan_resume))
             }
-            OutlinedButton(
-              onClick = onCancel,
-              modifier = Modifier
-                .heightIn(min = 48.dp)
-                .testTag("home_cancel_scan_button"),
-            ) {
-              Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-              Spacer(modifier = Modifier.size(6.dp))
-              Text(stringResource(R.string.home_scan_cancel))
-            }
           }
-
-          else -> {
-            Button(
-              onClick = onStart,
-              enabled = hasAllFilesAccess,
-              modifier = Modifier
-                .heightIn(min = 48.dp)
-                .testTag("home_start_scan_button"),
-            ) {
-              Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-              Spacer(modifier = Modifier.size(6.dp))
-              Text(
-                stringResource(
-                  if (session == null) R.string.home_scan_start else R.string.home_scan_new,
-                ),
-              )
-            }
-          }
-        }
-
-        if (session != null) {
-          TextButton(
-            onClick = onOpenDetails,
+          OutlinedButton(
+            onClick = onCancelScan,
             modifier = Modifier
               .heightIn(min = 48.dp)
-              .testTag("home_scan_details_button"),
+              .testTag("home_cancel_scan_button"),
           ) {
-            Text(stringResource(R.string.home_scan_details))
+            Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(stringResource(R.string.home_scan_cancel))
           }
+        }
+      } else if (useCompactStack) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(
+            onClick = onStartScan,
+            enabled = hasAllFilesAccess && !isCleanupRunning,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("home_start_scan_button"),
+          ) {
+            Icon(Icons.Filled.Radar, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(8.dp))
+            Text(stringResource(R.string.home_btn_scan))
+          }
+          FilledTonalButton(
+            onClick = onRequestTotalCleanup,
+            enabled = hasAllFilesAccess && !isCleanupRunning && overview.hasPreselected,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("home_total_cleanup_button"),
+          ) {
+            Icon(Icons.Filled.CleaningServices, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(8.dp))
+            Text(stringResource(R.string.home_btn_total_cleanup))
+          }
+        }
+      } else {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Button(
+            onClick = onStartScan,
+            enabled = hasAllFilesAccess && !isCleanupRunning,
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 48.dp)
+              .testTag("home_start_scan_button"),
+          ) {
+            Icon(Icons.Filled.Radar, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(stringResource(R.string.home_btn_scan), maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+          FilledTonalButton(
+            onClick = onRequestTotalCleanup,
+            enabled = hasAllFilesAccess && !isCleanupRunning && overview.hasPreselected,
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 48.dp)
+              .testTag("home_total_cleanup_button"),
+          ) {
+            Icon(Icons.Filled.CleaningServices, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(stringResource(R.string.home_btn_total_cleanup), maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
+      }
+
+      if (session != null) {
+        TextButton(
+          onClick = onOpenScanDetails,
+          modifier = Modifier
+            .heightIn(min = 48.dp)
+            .testTag("home_scan_details_button"),
+        ) {
+          Text(stringResource(R.string.home_scan_details))
         }
       }
     }
   }
+}
+
+@Composable
+private fun CategorySummaryRow(
+  item: CategoryOverviewItem,
+  summary: CategorySummary,
+  onOpenResults: () -> Unit,
+) {
+  val catKey = item.category.name.lowercase(Locale.ROOT)
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .heightIn(min = 56.dp)
+      .clickable(onClick = onOpenResults)
+      .padding(horizontal = 16.dp, vertical = 10.dp)
+      .testTag("home_open_${catKey}_results_button"),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Box(
+      modifier = Modifier
+        .size(36.dp)
+        .clip(RoundedCornerShape(10.dp))
+        .background(MaterialTheme.colorScheme.primaryContainer),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(
+        imageVector = item.icon,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+        modifier = Modifier.size(18.dp),
+      )
+    }
+    Column(
+      modifier = Modifier.weight(1f),
+      verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+      Text(
+        text = stringResource(item.titleRes),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+      if (summary.latestSessionId != null) {
+        Text(
+          text = stringResource(
+            R.string.home_category_metrics_format,
+            summary.candidateCount,
+            ByteFormatter.format(summary.totalBytes),
+          ),
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.testTag("home_${catKey}_metrics"),
+        )
+      } else {
+        Text(
+          text = stringResource(R.string.home_category_unscanned),
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+    Icon(
+      imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+      contentDescription = stringResource(R.string.home_view_results_button),
+      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+  }
+}
+
+@Composable
+private fun TotalCleanupConfirmationDialog(
+  overview: OverallCleanupOverview,
+  onConfirm: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val bodyText = when {
+    overview.preselectedTrashCount > 0 && overview.preselectedMediaStoreCount > 0 ->
+      stringResource(
+        R.string.results_confirm_mixed_body,
+        overview.preselectedTrashCount,
+        ByteFormatter.format(overview.preselectedTrashBytes),
+        overview.preselectedMediaStoreCount,
+      )
+    overview.preselectedTrashCount > 0 ->
+      stringResource(
+        R.string.results_confirm_trash_body,
+        overview.preselectedTrashCount,
+        ByteFormatter.format(overview.preselectedTrashBytes),
+      )
+    else ->
+      stringResource(
+        R.string.results_confirm_mediastore_body,
+        overview.preselectedMediaStoreCount,
+      )
+  }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    modifier = Modifier.testTag("home_total_cleanup_confirm_dialog"),
+    title = { Text(stringResource(R.string.home_total_cleanup_confirm_title)) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(text = bodyText, style = MaterialTheme.typography.bodyMedium)
+        if (overview.manualReviewCount > 0) {
+          Text(
+            text = stringResource(
+              R.string.home_cleanup_manual_only_hint_format,
+              overview.manualReviewCount,
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(
+        onClick = onConfirm,
+        modifier = Modifier
+          .heightIn(min = 48.dp)
+          .testTag("home_total_cleanup_confirm_button"),
+      ) {
+        Text(stringResource(R.string.home_total_cleanup_confirm_action))
+      }
+    },
+    dismissButton = {
+      TextButton(
+        onClick = onDismiss,
+        modifier = Modifier.heightIn(min = 48.dp),
+      ) {
+        Text(stringResource(R.string.trash_confirm_cancel))
+      }
+    },
+  )
 }
 
 @Composable
@@ -733,98 +984,6 @@ private fun PermissionStatusBanner(
             .testTag("home_grant_storage_button"),
         ) {
           Text(stringResource(R.string.home_perm_grant))
-        }
-      }
-    }
-  }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CategoryOverviewCard(
-  item: CategoryOverviewItem,
-  modifier: Modifier = Modifier,
-  summary: CategorySummary? = null,
-  hasAllFilesAccess: Boolean = false,
-  isScanBusy: Boolean = false,
-  onAnalyze: (() -> Unit)? = null,
-  onOpenResults: (() -> Unit)? = null,
-) {
-  OutlinedCard(
-    modifier = modifier.testTag(item.tag),
-  ) {
-    Column(
-      modifier = Modifier.padding(16.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        Box(
-          modifier = Modifier
-            .size(38.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            imageVector = item.icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(20.dp),
-          )
-        }
-        Text(
-          text = stringResource(item.titleRes),
-          style = MaterialTheme.typography.titleMedium,
-          modifier = Modifier.weight(1f),
-        )
-      }
-      Text(
-        text = stringResource(item.descRes),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-      val catKey = item.category.name.lowercase(Locale.ROOT)
-      if (summary != null && summary.latestSessionId != null) {
-        Text(
-          text = stringResource(
-            R.string.home_category_metrics_format,
-            summary.candidateCount,
-            ByteFormatter.format(summary.totalBytes),
-          ),
-          style = MaterialTheme.typography.labelLarge,
-          color = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.testTag("home_${catKey}_metrics"),
-        )
-      }
-      if (onAnalyze != null || onOpenResults != null) {
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          if (onAnalyze != null) {
-            FilledTonalButton(
-              onClick = onAnalyze,
-              enabled = hasAllFilesAccess && !isScanBusy,
-              modifier = Modifier
-                .heightIn(min = 48.dp)
-                .testTag("home_analyze_${catKey}_button"),
-            ) {
-              Text(stringResource(R.string.results_analyze_action))
-            }
-          }
-          if (onOpenResults != null) {
-            OutlinedButton(
-              onClick = onOpenResults,
-              modifier = Modifier
-                .heightIn(min = 48.dp)
-                .testTag("home_open_${catKey}_results_button"),
-            ) {
-              Text(stringResource(R.string.home_view_results_button))
-            }
-          }
         }
       }
     }

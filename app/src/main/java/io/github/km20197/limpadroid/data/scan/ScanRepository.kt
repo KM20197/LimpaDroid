@@ -10,6 +10,7 @@ import io.github.km20197.limpadroid.domain.model.Candidate
 import io.github.km20197.limpadroid.domain.model.Category
 import io.github.km20197.limpadroid.domain.model.CategorySummary
 import io.github.km20197.limpadroid.domain.model.Confidence
+import io.github.km20197.limpadroid.domain.model.OverallCleanupOverview
 import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
 import io.github.km20197.limpadroid.domain.model.ScanEvent
 import io.github.km20197.limpadroid.domain.model.ScanScope
@@ -18,9 +19,11 @@ import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
 import io.github.km20197.limpadroid.domain.scan.rules.DuplicateKeepPolicy
+import io.github.km20197.limpadroid.domain.scan.rules.SuperfluousRuleId
 import java.util.UUID
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -77,6 +80,45 @@ class ScanRepository(
           }
       }
     }
+
+  fun observeOverallCleanupOverview(): Flow<OverallCleanupOverview> {
+    val categoryFlows = Category.entries.map { category ->
+      observeCategoryCandidates(category).map { records ->
+        extractCategoryCleanupBucket(category, records)
+      }
+    }
+    return combine(categoryFlows) { buckets ->
+      OverallCleanupOverview(
+        totalCandidatesCount = buckets.sumOf { it.totalCount },
+        totalCandidatesBytes = buckets.sumOf { it.totalBytes },
+        preselectedCount = buckets.sumOf { it.preselectedRecords.size },
+        preselectedTrashCount = buckets.sumOf { bucket ->
+          bucket.preselectedRecords.count {
+            it.candidate.ruleId != SuperfluousRuleId.STALE_MEDIASTORE.ruleId
+          }
+        },
+        preselectedTrashBytes = buckets.sumOf { bucket ->
+          bucket.preselectedRecords
+            .filter { it.candidate.ruleId != SuperfluousRuleId.STALE_MEDIASTORE.ruleId }
+            .sumOf { it.candidate.sizeBytes }
+        },
+        preselectedMediaStoreCount = buckets.sumOf { bucket ->
+          bucket.preselectedRecords.count {
+            it.candidate.ruleId == SuperfluousRuleId.STALE_MEDIASTORE.ruleId
+          }
+        },
+      )
+    }
+  }
+
+  suspend fun getPreselectedCleanupRecordsBySession(): Map<String, List<ScanCandidateRecord>> {
+    val allSelected = Category.entries.flatMap { category ->
+      val session = sessionDao.getLatestSessionByScopes(scopesFor(category)) ?: return@flatMap emptyList()
+      val records = candidateDao.getForSessionByCategory(session.id, category.name).map { it.toDomain() }
+      extractCategoryCleanupBucket(category, records).preselectedRecords
+    }
+    return allSelected.groupBy { it.sessionId }
+  }
 
   fun observeRecentErrors(sessionId: String, limit: Int = 200): Flow<List<WalkError>> =
     errorDao.observeRecentForSession(sessionId, limit).map { list -> list.map { it.toDomain() } }
@@ -427,6 +469,51 @@ class ScanRepository(
     message = message,
     timestamp = timestamp,
   )
+
+  private data class CategoryCleanupBucket(
+    val totalCount: Int,
+    val totalBytes: Long,
+    val preselectedRecords: List<ScanCandidateRecord>,
+  )
+
+  private fun extractCategoryCleanupBucket(
+    category: Category,
+    records: List<ScanCandidateRecord>,
+  ): CategoryCleanupBucket {
+    if (records.isEmpty()) {
+      return CategoryCleanupBucket(0, 0L, emptyList())
+    }
+    if (category != Category.DUPLICATE) {
+      return CategoryCleanupBucket(
+        totalCount = records.size,
+        totalBytes = records.sumOf { it.candidate.sizeBytes },
+        preselectedRecords = records.filter { it.candidate.preselected },
+      )
+    }
+
+    val removableAll = mutableListOf<ScanCandidateRecord>()
+    val preselectedSafe = mutableListOf<ScanCandidateRecord>()
+    val groups = records.groupBy { it.candidate.groupId ?: it.candidate.path }.values
+    for (rawItems in groups) {
+      if (rawItems.size < 2) continue
+      val safeSelection = DuplicateKeepPolicy.enforceKeepAtLeastOneCopy(
+        groupRecords = rawItems,
+        desiredSelectionById = rawItems.associate { it.id to it.candidate.preselected },
+      )
+      for (record in rawItems) {
+        if (record.isKept) continue
+        removableAll.add(record)
+        if (safeSelection[record.id] == true) {
+          preselectedSafe.add(record)
+        }
+      }
+    }
+    return CategoryCleanupBucket(
+      totalCount = removableAll.size,
+      totalBytes = removableAll.sumOf { it.candidate.sizeBytes },
+      preselectedRecords = preselectedSafe,
+    )
+  }
 
   companion object {
     private const val BATCH_PARAM_CHUNK = 400

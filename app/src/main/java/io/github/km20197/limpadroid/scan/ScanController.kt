@@ -12,6 +12,7 @@ import io.github.km20197.limpadroid.data.log.ScanLogger
 import io.github.km20197.limpadroid.data.scan.ScanRepository
 import io.github.km20197.limpadroid.domain.model.Category
 import io.github.km20197.limpadroid.domain.model.CategorySummary
+import io.github.km20197.limpadroid.domain.model.OverallCleanupOverview
 import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
 import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanSession
@@ -39,6 +40,10 @@ interface ScanController {
     flowOf(emptyList())
   fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
     flowOf(null)
+  fun observeOverallCleanupOverview(): Flow<OverallCleanupOverview> =
+    flowOf(OverallCleanupOverview())
+  suspend fun getPreselectedCleanupRecordsBySession(): Map<String, List<ScanCandidateRecord>> =
+    emptyMap()
   suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) = Unit
   suspend fun setCandidatesPreselected(candidateIds: List<Long>, preselected: Boolean) = Unit
   suspend fun swapDuplicateKeptCandidate(sessionId: String, groupId: String, newKeepCandidateId: Long) = Unit
@@ -73,6 +78,12 @@ class WorkManagerScanController(
 
   override fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
     scanRepository.observeLatestSessionForCategory(category)
+
+  override fun observeOverallCleanupOverview(): Flow<OverallCleanupOverview> =
+    scanRepository.observeOverallCleanupOverview()
+
+  override suspend fun getPreselectedCleanupRecordsBySession(): Map<String, List<ScanCandidateRecord>> =
+    scanRepository.getPreselectedCleanupRecordsBySession()
 
   override suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) {
     scanRepository.setCandidatePreselected(candidateId, preselected)

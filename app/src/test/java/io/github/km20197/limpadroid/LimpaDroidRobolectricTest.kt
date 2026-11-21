@@ -42,6 +42,7 @@ import io.github.km20197.limpadroid.domain.model.CategorySummary
 import io.github.km20197.limpadroid.domain.model.Confidence
 import io.github.km20197.limpadroid.domain.model.MediaStoreRepairSummary
 import io.github.km20197.limpadroid.domain.model.OperationHistoryRecord
+import io.github.km20197.limpadroid.domain.model.OverallCleanupOverview
 import io.github.km20197.limpadroid.domain.model.PurgeSummary
 import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
 import io.github.km20197.limpadroid.domain.model.ScanScope
@@ -806,6 +807,89 @@ class LimpaDroidRobolectricTest {
     composeTestRule.waitForIdle()
   }
 
+  @Test
+  fun `simplified home shows scan and total cleanup buttons moves preselected HIGH items and displays CC BY-NC license`() {
+    val rootPath = tempFolder.newFolder("total_cleanup_cuj").toPath().toRealPath()
+    val thumbsDir = Files.createDirectories(rootPath.resolve("DCIM/.thumbnails"))
+    val thumbFile = Files.writeString(thumbsDir.resolve("thumb_high.jpg"), "thumb-bytes-high")
+    val emptyDir = Files.createDirectories(rootPath.resolve("PastaVazia"))
+
+    val fakeChecker = FakePermissionChecker(storageGranted = true, notificationGranted = true)
+    val fakePrefs = FakeAppPreferencesRepository()
+    val container = createFakeAppContainer(fakeChecker, fakePrefs, rootPath)
+
+    val db = openDatabase!!
+    runBlocking {
+      val repo = ScanRepository(db.scanSessionDao(), db.scanCandidateDao(), db.scanErrorDao())
+      val session = repo.createSession(ScanScope.FULL, rootPath.toString())
+      repo.appendCandidatesAndErrors(
+        sessionId = session.id,
+        candidates = listOf(
+          Candidate(
+            path = thumbFile.toString(),
+            sizeBytes = 16L,
+            lastModified = Files.getLastModifiedTime(thumbFile).toMillis(),
+            category = Category.SUPERFLUOUS,
+            ruleId = SuperfluousRuleId.THUMBS.ruleId,
+            confidence = Confidence.HIGH,
+            preselected = true,
+          ) to "Miniatura em cache",
+          Candidate(
+            path = emptyDir.toString(),
+            sizeBytes = 0L,
+            lastModified = Files.getLastModifiedTime(emptyDir).toMillis(),
+            category = Category.SUPERFLUOUS,
+            ruleId = SuperfluousRuleId.EMPTY_DIR.ruleId,
+            confidence = Confidence.MEDIUM,
+            preselected = false,
+          ) to "Diretório vazio",
+        ),
+        errors = emptyList(),
+      )
+      repo.finalizeWorkerRun(
+        sessionId = session.id,
+        targetStatusIfStillRunning = ScanStatus.COMPLETED,
+        scannedFiles = 2L,
+        scannedDirs = 2L,
+        scannedBytes = 16L,
+        checkpoint = WalkCheckpoint(settledFiles = 2L, settledDirs = 2L, settledBytes = 16L),
+      )
+    }
+
+    composeTestRule.setContent {
+      LimpaDroidTheme(dynamicColor = false) {
+        LimpaDroidNavHost(container = container)
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Garante que apenas os 2 botões principais existem e os botões por categoria foram removidos
+    composeTestRule.onNodeWithTag("home_start_scan_button").assertExists().assertIsEnabled()
+    composeTestRule.onNodeWithTag("home_total_cleanup_button").assertExists().assertIsEnabled()
+    assertTrue(
+      composeTestRule.onAllNodesWithTag("home_analyze_superfluous_button")
+        .fetchSemanticsNodes()
+        .isEmpty(),
+    )
+    composeTestRule.onNodeWithText("Licença CC BY-NC 4.0 · Ricardo Coutinho Mello").assertExists()
+
+    val snapshotBefore = runBlocking { container.scanController.getPreselectedCleanupRecordsBySession() }
+    assertEquals(1, snapshotBefore.values.flatten().size)
+
+    composeTestRule.onNodeWithTag("home_total_cleanup_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("home_total_cleanup_confirm_dialog").assertExists()
+    composeTestRule.onNodeWithTag("home_total_cleanup_confirm_button").performClick()
+
+    composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+      composeTestRule.onAllNodesWithTag("home_cleanup_manual_only_hint")
+        .fetchSemanticsNodes()
+        .isNotEmpty() && !Files.exists(thumbFile)
+    }
+    assertFalse(Files.exists(thumbFile))
+    assertTrue(Files.exists(emptyDir))
+  }
+
   private fun createFakeAppContainer(
     permissionChecker: PermissionChecker,
     preferencesRepository: AppPreferencesRepository,
@@ -1008,6 +1092,12 @@ class LimpaDroidRobolectricTest {
 
       override fun observeLatestSessionForCategory(category: Category): Flow<ScanSession?> =
         scanRepository.observeLatestSessionForCategory(category)
+
+      override fun observeOverallCleanupOverview(): Flow<OverallCleanupOverview> =
+        scanRepository.observeOverallCleanupOverview()
+
+      override suspend fun getPreselectedCleanupRecordsBySession(): Map<String, List<ScanCandidateRecord>> =
+        scanRepository.getPreselectedCleanupRecordsBySession()
 
       override suspend fun setCandidatePreselected(candidateId: Long, preselected: Boolean) {
         scanRepository.setCandidatePreselected(candidateId, preselected)

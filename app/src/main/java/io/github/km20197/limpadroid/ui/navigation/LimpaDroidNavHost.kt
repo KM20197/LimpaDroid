@@ -69,6 +69,7 @@ fun LimpaDroidNavHost(
           scanController = container.scanController,
           trashController = container.trashController,
           installedAppsRepository = container.installedAppsRepository,
+          preferencesRepository = container.preferencesRepository,
         ),
       )
       HomeScreen(

@@ -35,9 +35,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
    - `Download/instalador_teste.apk`
    - `Documents/Protegido/nao_tocar.tmp`
 2. Em **Configurações** (ícone de engrenagem na **Início**), cadastre `/storage/emulated/0/Documents/Protegido` em **Pastas e caminhos protegidos**.
-3. Na **Início**, toque em **Analisar** no cartão **Dados supérfluos** e depois em **Ver resultados**.
-4. Confirme que apenas os itens de confiança **Alta** (`THUMBS` e `PARTIAL_DL`) vêm pré-selecionados, enquanto **Média** (`LOST_DIR`, `EMPTY_DIR`) e **Baixa** (`OLD_APK`) vêm desmarcados, e que nenhum arquivo dentro de `Documents/Protegido` é listado.
-5. Toque em **Mover para a lixeira**, confirme o aviso de retenção de 30 dias e valide em **Lixeira** e **Histórico** que os itens movidos podem ser restaurados para o caminho original.
+3. Na **Início**, toque em **Varredura** (ou abra a categoria **Dados supérfluos** e toque em **Analisar**).
+4. Na lista de resultados de **Dados supérfluos**, confirme que apenas os itens de confiança **Alta** (`THUMBS` e `PARTIAL_DL`) vêm pré-selecionados, enquanto **Média** (`LOST_DIR`, `EMPTY_DIR`) e **Baixa** (`OLD_APK`) vêm desmarcados, e que nenhum arquivo dentro de `Documents/Protegido` é listado.
+5. Toque em **Mover para a lixeira** (ou utilize **Limpeza total** na **Início**), confirme o aviso de retenção de 30 dias e valide em **Lixeira** e **Histórico** que os itens movidos podem ser restaurados para o caminho original.
 
 ---
 
@@ -50,7 +50,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
      - `net.exemplo.desconhecido/cache.dat` na raiz do armazenamento compartilhado
      - Uma pasta com formato de pacote ou nome pertencente a um aplicativo **arquivado** (Android 15+) e confirme que pastas de WhatsApp (`Android/media/com.whatsapp` / `WhatsApp`) existam no dispositivo.
 2. **Execução da análise:**
-   - Na tela **Início**, toque em **Analisar** no cartão **Possíveis dados remanescentes de aplicativos removidos** e depois em **Ver resultados**.
+   - Na tela **Início**, execute **Varredura** e toque na categoria **Possíveis dados remanescentes de aplicativos removidos** (ou use **Analisar** dentro da tela de resultados).
 3. **Verificações obrigatórias:**
    - `Android/media/com.exemplo.removido` aparece em **Pacote ausente em Android/media** com confiança **Alta** e caixa **marcada**.
    - `Documents/<Nome do Aplicativo>` aparece em **Pasta de aplicativo removido no histórico** com confiança **Média**, caixa **desmarcada** e descrição exibindo nome do aplicativo, pacote e data de remoção.
@@ -69,7 +69,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
    - Crie outro par idêntico com `>= 4 KiB` exclusivamente fora das pastas de prioridade (por exemplo, `TempA/sem_prio_1.bin` e `TempB/sem_prio_2.bin`).
    - Crie também dois arquivos idênticos menores que `4 KiB` (`1 KiB`) em `Documents/peq_1.txt` e `Download/peq_2.txt`.
 2. **Análise e política de preservação:**
-   - Na tela **Início**, toque em **Analisar** no cartão **Arquivos duplicados** e abra **Ver resultados**.
+   - Na tela **Início**, execute **Varredura** e toque na categoria **Arquivos duplicados** (ou use **Analisar** na tela da categoria).
    - Confirme que os arquivos menores que `4 KiB` não aparecem com o limite padrão.
    - No grupo com cópia em `DCIM/Camera`, verifique se a cópia em `DCIM/Camera` está marcada como **Preservada** (sem caixa de seleção) e a cópia em `Download` vem selecionada (`Alta`).
    - No grupo de `TempA`/`TempB`, confirme o selo **Sem pasta de prioridade**, confiança **Média** e todas as caixas inicialmente desmarcadas.
@@ -85,7 +85,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
      - `WhatsApp Animated Gifs/GIF-ANTIGO.mp4` (> 90 dias)
      - Confirme a existência de pastas protegidas: `.Statuses/`, `Backups/`, `WhatsApp Documents/`, `WhatsApp Stickers/`.
 2. **Primeira execução e regras de segurança:**
-   - Na tela **Início**, toque em **Analisar** no cartão **Mídia do WhatsApp** e abra **Ver resultados**.
+   - Na tela **Início**, execute **Varredura** e toque na categoria **Mídia do WhatsApp** (ou use **Analisar** na tela da categoria).
    - Confirme a exibição do aviso obrigatório de que arquivos removidos deixam de aparecer no WhatsApp até serem restaurados da lixeira.
    - Verifique que apenas arquivos com mais de 90 dias de `Images`, `Video`, `Audio` e `Voice Notes` são listados; `GIF-ANTIGO.mp4` e `.Statuses`/`Backups`/`WhatsApp Documents`/`WhatsApp Stickers` **não aparecem**.
    - Confirme que todas as caixas de seleção vêm **desmarcadas na primeira execução**, mesmo exibindo confiança **Alta**.

@@ -2,10 +2,15 @@ package io.github.km20197.limpadroid.ui.home
 
 import android.content.Intent
 import io.github.km20197.limpadroid.data.permission.PermissionChecker
+import io.github.km20197.limpadroid.data.prefs.AppPreferencesRepository
+import io.github.km20197.limpadroid.domain.model.Candidate
 import io.github.km20197.limpadroid.domain.model.Category
 import io.github.km20197.limpadroid.domain.model.CategorySummary
+import io.github.km20197.limpadroid.domain.model.Confidence
 import io.github.km20197.limpadroid.domain.model.OperationHistoryRecord
+import io.github.km20197.limpadroid.domain.model.OverallCleanupOverview
 import io.github.km20197.limpadroid.domain.model.PurgeSummary
+import io.github.km20197.limpadroid.domain.model.ScanCandidateRecord
 import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanSession
 import io.github.km20197.limpadroid.domain.model.ScanStatus
@@ -17,7 +22,10 @@ import io.github.km20197.limpadroid.domain.pkg.InstalledAppsRepository
 import io.github.km20197.limpadroid.domain.pkg.InstalledAppsSnapshot
 import io.github.km20197.limpadroid.scan.ScanController
 import io.github.km20197.limpadroid.scan.ScanStartResult
+import io.github.km20197.limpadroid.trash.CleanupBatchResult
 import io.github.km20197.limpadroid.trash.TrashController
+import io.github.km20197.limpadroid.ui.results.CategoryResultsFeedback
+import java.nio.file.Path
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -71,7 +79,7 @@ class HomeViewModelTest {
   }
 
   @Test
-  fun `startInfrastructureScan pauses and resumes active session when storage access granted`() {
+  fun `startFullScan uses FULL scope and pauses and resumes active session`() {
     val controller = FakeScanController()
     val trashController = FakeTrashController().apply {
       statsFlow.value = TrashStats(inTrashCount = 2, inTrashBytes = 4096L, freedBytes = 1024L)
@@ -82,7 +90,8 @@ class HomeViewModelTest {
     assertEquals(2, vm.uiState.value.trashStats.inTrashCount)
     assertEquals(1024L, vm.uiState.value.trashStats.freedBytes)
 
-    vm.startInfrastructureScan()
+    vm.startFullScan()
+    assertEquals(ScanScope.FULL, vm.uiState.value.latestScanSession?.scope)
     assertEquals(ScanStatus.RUNNING, vm.uiState.value.latestScanSession?.status)
     assertNull(vm.uiState.value.scanActionMessage)
 
@@ -94,6 +103,71 @@ class HomeViewModelTest {
 
     vm.cancelActiveOrPausedScan()
     assertEquals(ScanStatus.CANCELLED, vm.uiState.value.latestScanSession?.status)
+  }
+
+  @Test
+  fun `requestTotalCleanup opens confirmation and confirmTotalCleanup executes batch with exclusions`() {
+    val record = ScanCandidateRecord(
+      id = 10L,
+      sessionId = "s-full",
+      candidate = Candidate(
+        path = "/storage/emulated/0/DCIM/.thumbnails/t.jpg",
+        sizeBytes = 2048L,
+        lastModified = 1_000L,
+        category = Category.SUPERFLUOUS,
+        ruleId = "THUMBS",
+        confidence = Confidence.HIGH,
+        preselected = true,
+      ),
+    )
+    val controller = FakeScanController().apply {
+      overviewFlow.value = OverallCleanupOverview(
+        totalCandidatesCount = 3,
+        totalCandidatesBytes = 5000L,
+        preselectedCount = 1,
+        preselectedTrashCount = 1,
+        preselectedTrashBytes = 2048L,
+      )
+      preselectedBySession = mapOf("s-full" to listOf(record))
+    }
+    val trashController = FakeTrashController()
+    val prefs = object : AppPreferencesRepository {
+      override val notificationPromptHandled: Flow<Boolean> = flowOf(false)
+      override val enabledSuperfluousRuleIds: Flow<Set<String>> = flowOf(emptySet())
+      override val userExcludedPaths: Flow<Set<String>> = flowOf(setOf("/storage/emulated/0/Protegida"))
+      override val duplicateMinSizeBytes: Flow<Long> = flowOf(4096L)
+      override val duplicatePriorityFolders: Flow<List<String>> = flowOf(emptyList())
+      override val whatsappMinAgeDays: Flow<Int> = flowOf(90)
+      override val whatsappEnabledMediaTypes: Flow<Set<String>> = flowOf(emptySet())
+      override val whatsappAutoPreselect: Flow<Boolean> = flowOf(false)
+      override suspend fun setNotificationPromptHandled(handled: Boolean) = Unit
+      override suspend fun setSuperfluousRuleEnabled(ruleId: String, enabled: Boolean) = Unit
+      override suspend fun addUserExcludedPath(path: String) = Unit
+      override suspend fun removeUserExcludedPath(path: String) = Unit
+      override suspend fun setDuplicateMinSizeBytes(bytes: Long) = Unit
+      override suspend fun setDuplicatePriorityFolders(folders: List<String>) = Unit
+      override suspend fun setWhatsAppMinAgeDays(days: Int) = Unit
+      override suspend fun setWhatsAppMediaTypeEnabled(typeName: String, enabled: Boolean) = Unit
+      override suspend fun setWhatsAppAutoPreselect(enabled: Boolean) = Unit
+    }
+    val checker = FakePermissionChecker(hasStorage = { true }, hasNotif = { true })
+    val vm = HomeViewModel(checker, controller, trashController, preferencesRepository = prefs)
+
+    vm.requestTotalCleanup()
+    assertTrue(vm.uiState.value.isTotalCleanupConfirmationVisible)
+
+    vm.confirmTotalCleanup()
+    assertFalse(vm.uiState.value.isTotalCleanupConfirmationVisible)
+    assertEquals(1, trashController.batchCalls.size)
+    assertEquals(listOf(record), trashController.batchCalls.first().second)
+    assertEquals(setOf("/storage/emulated/0/Protegida"), trashController.lastExcludedPaths.map { it.toString() }.toSet())
+    assertEquals(listOf(10L), controller.removedCandidateIds)
+    val feedback = vm.uiState.value.totalCleanupFeedback as CategoryResultsFeedback.CleanupDone
+    assertEquals(1, feedback.movedCount)
+    assertEquals(2048L, feedback.movedBytes)
+
+    vm.clearTotalCleanupFeedback()
+    assertNull(vm.uiState.value.totalCleanupFeedback)
   }
 
   @Test
@@ -213,6 +287,9 @@ class HomeViewModelTest {
 
   private class FakeTrashController : TrashController {
     val statsFlow = MutableStateFlow(TrashStats())
+    val batchCalls = mutableListOf<Pair<String?, List<ScanCandidateRecord>>>()
+    var lastExcludedPaths: Set<Path> = emptySet()
+
     override val inTrashEntries: Flow<List<TrashEntry>> = flowOf(emptyList())
     override val trashStats: Flow<TrashStats> = statsFlow
     override val recentHistory: Flow<List<OperationHistoryRecord>> = flowOf(emptyList())
@@ -221,6 +298,23 @@ class HomeViewModelTest {
       TrashRestoreResult.MissingPayload("empty")
     override suspend fun deletePermanently(entryId: String): PurgeSummary = PurgeSummary(0, 0L)
     override suspend fun emptyTrash(): PurgeSummary = PurgeSummary(0, 0L)
+
+    override suspend fun runBatchCleanup(
+      sessionId: String?,
+      records: List<ScanCandidateRecord>,
+      userExcludedPaths: Set<Path>,
+    ): CleanupBatchResult {
+      batchCalls.add(sessionId to records)
+      lastExcludedPaths = userExcludedPaths
+      return CleanupBatchResult(
+        movedCount = records.size,
+        movedBytes = records.sumOf { it.candidate.sizeBytes },
+        repairedMediaStoreCount = 0,
+        skippedOrFailedCount = 0,
+        cleanedCandidateIds = records.map { it.id },
+        candidatesAlreadyRemovedFromRepo = false,
+      )
+    }
   }
 
   private class FakeScanController : ScanController {
@@ -229,6 +323,9 @@ class HomeViewModelTest {
     val orphanSummaryFlow = MutableStateFlow(CategorySummary(Category.ORPHAN))
     val duplicateSummaryFlow = MutableStateFlow(CategorySummary(Category.DUPLICATE))
     val whatsappSummaryFlow = MutableStateFlow(CategorySummary(Category.WHATSAPP))
+    val overviewFlow = MutableStateFlow(OverallCleanupOverview())
+    var preselectedBySession: Map<String, List<ScanCandidateRecord>> = emptyMap()
+    val removedCandidateIds = mutableListOf<Long>()
     var nextStartResult: ScanStartResult? = null
 
     override val latestSession: Flow<ScanSession?> = sessionState
@@ -242,6 +339,15 @@ class HomeViewModelTest {
       Category.ORPHAN -> orphanSummaryFlow
       Category.DUPLICATE -> duplicateSummaryFlow
       Category.WHATSAPP -> whatsappSummaryFlow
+    }
+
+    override fun observeOverallCleanupOverview(): Flow<OverallCleanupOverview> = overviewFlow
+
+    override suspend fun getPreselectedCleanupRecordsBySession(): Map<String, List<ScanCandidateRecord>> =
+      preselectedBySession
+
+    override suspend fun removeCleanedCandidates(sessionId: String?, candidateIds: List<Long>) {
+      removedCandidateIds.addAll(candidateIds)
     }
 
     override suspend fun reconcileInterruptedSessions() = Unit

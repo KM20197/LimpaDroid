@@ -21,6 +21,9 @@ interface ScanSessionDao {
   @Query("SELECT * FROM scan_sessions WHERE id = :sessionId")
   suspend fun getSession(sessionId: String): ScanSessionEntity?
 
+  @Query("SELECT * FROM scan_sessions WHERE scope IN (:scopes) ORDER BY startedAt DESC LIMIT 1")
+  suspend fun getLatestSessionByScopes(scopes: List<String>): ScanSessionEntity?
+
   @Query("SELECT * FROM scan_sessions ORDER BY startedAt DESC LIMIT 1")
   suspend fun getLatestSession(): ScanSessionEntity?
 
@@ -141,6 +144,18 @@ interface ScanCandidateDao {
     sessionId: String,
     category: String,
   ): Flow<List<ScanCandidateEntity>>
+
+  @Query(
+    """
+    SELECT * FROM scan_candidates
+    WHERE sessionId = :sessionId AND category = :category
+    ORDER BY id ASC
+    """,
+  )
+  suspend fun getForSessionByCategory(
+    sessionId: String,
+    category: String,
+  ): List<ScanCandidateEntity>
 
   @Query("SELECT * FROM scan_candidates WHERE id = :candidateId")
   suspend fun getById(candidateId: Long): ScanCandidateEntity?

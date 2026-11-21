@@ -22,6 +22,7 @@ import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.ScanStatus
 import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
+import io.github.km20197.limpadroid.domain.scan.FullScanEngine
 import io.github.km20197.limpadroid.domain.scan.ScanConfig
 import io.github.km20197.limpadroid.domain.scan.ScanEngine
 import java.nio.file.Paths
@@ -149,11 +150,18 @@ class ScanWorker(
       initialErrorCount = session.errorCount,
     )
 
+    val categoryEngines = listOfNotNull(
+      deps.superfluousScanEngine,
+      deps.orphanScanEngine,
+      deps.duplicateScanEngine,
+      deps.whatsappScanEngine,
+    )
     val activeEngine = when (session.scope) {
-      ScanScope.SUPERFLUOUS, ScanScope.FULL -> deps.superfluousScanEngine ?: deps.scanEngine
+      ScanScope.SUPERFLUOUS -> deps.superfluousScanEngine ?: deps.scanEngine
       ScanScope.ORPHAN -> deps.orphanScanEngine ?: deps.scanEngine
       ScanScope.DUPLICATE -> deps.duplicateScanEngine ?: deps.scanEngine
       ScanScope.WHATSAPP -> deps.whatsappScanEngine ?: deps.scanEngine
+      ScanScope.FULL -> if (categoryEngines.isNotEmpty()) FullScanEngine(categoryEngines) else deps.scanEngine
       ScanScope.INFRASTRUCTURE -> deps.scanEngine
     }
 

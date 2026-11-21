@@ -28,8 +28,8 @@ Copyright © 2026 **Ricardo Coutinho Mello**. Distribuído sob a licença [Creat
 ## Uso básico
 
 1. **Onboarding:** conceda `Acesso a todos os arquivos` (`MANAGE_EXTERNAL_STORAGE`) e escolha se deseja ativar notificações de progresso em segundo plano.
-2. **Análise por categoria:** na tela **Início**, execute **Analisar** em **Dados supérfluos**, **Possíveis dados remanescentes de aplicativos removidos**, **Arquivos duplicados** ou **Mídia do WhatsApp**.
-3. **Revisão e Lixeira:** abra **Ver resultados**, confira a seleção (itens `LOW`/`MEDIUM` e a primeira execução do WhatsApp vêm desmarcados por segurança) e confirme **Mover para a lixeira** (retenção de 30 dias antes do expurgo automático).
+2. **Varredura e Limpeza total:** na tela **Início**, toque em **Varredura** para analisar de uma só vez todas as categorias (**Dados supérfluos**, **Possíveis dados remanescentes de aplicativos removidos**, **Arquivos duplicados** e **Mídia do WhatsApp**). Em seguida, toque em **Limpeza total** para confirmar a movimentação em lote dos itens seguros pré-selecionados para a lixeira de 30 dias.
+3. **Revisão por categoria e Lixeira:** toque em qualquer linha da seção **Categorias identificadas** para inspecionar detalhes, ajustar seleções manuais (`LOW`/`MEDIUM` e primeira execução do WhatsApp vêm desmarcados por segurança) ou trocar a cópia preservada em grupos de duplicados.
 4. **Configurações, Histórico e Diagnóstico:** ajuste regras, exceções protegidas, pastas de prioridade de duplicados e filtros de idade/mídia do WhatsApp pelo ícone de engrenagem; acompanhe auditoria em **Histórico** e abra o **Modo Diagnóstico** mantendo pressionada a versão no rodapé da tela **Início**.
 
 ## Compilação local
@@ -87,8 +87,15 @@ keytool -genkeypair -v \
 3. Confirme eventual aviso do Google Play Protect para aplicativo pessoal não listado na loja.
 4. Para futuras atualizações, baixe o novo APK da nova release e instale diretamente sobre o existente (sem desinstalar), preservando configurações, histórico e lixeira.
 
+## Licença
+
+Copyright (c) 2026 **Ricardo Coutinho Mello**.
+
+Este projeto é distribuído sob a licença **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** — consulte o arquivo `LICENSE` na raiz do repositório. As fontes tipográficas embutidas permanecem sob a **SIL Open Font License 1.1** (`licenses/OFL.txt`).
+
 ## Documentação complementar
 
+- `LICENSE` — licença Creative Commons CC BY-NC 4.0 em nome de Ricardo Coutinho Mello.
 - `DECISOES.md` — verificações técnicas, divergências e decisões definitivas registradas.
 - `docs/AVALIACOES.md` — registro das auditorias independentes da Seção 14 por fase.
 - `docs/ROTEIRO_TESTE.md` — roteiro de validação manual em dispositivo físico.

@@ -83,15 +83,27 @@
     <string name="scan_notification_title">Varredura em andamento</string>
     <string name="scan_notification_text">%1$d arquivos analisados · %2$d erros</string>
 
-    <string name="home_scan_card_title">Varredura do armazenamento</string>
-    <string name="home_scan_idle_desc">Nenhuma varredura iniciada. Inicie a indexação recursiva local com controle de pausa e retomada.</string>
+    <string name="home_scan_card_title">Varredura e limpeza</string>
+    <string name="home_scan_idle_desc">Execute uma varredura local para identificar arquivos supérfluos, remanescentes, duplicados e mídias antigas do WhatsApp.</string>
     <string name="home_scan_perm_required">Conceda o acesso a todos os arquivos para iniciar a varredura.</string>
-    <string name="home_scan_start">Iniciar varredura</string>
-    <string name="home_scan_new">Nova varredura</string>
+    <string name="home_btn_scan">Varredura</string>
+    <string name="home_btn_total_cleanup">Limpeza total</string>
+    <string name="home_cleanup_ready_summary_format">Prontos para limpeza segura: %1$d item(ns) · %2$s</string>
+    <string name="home_cleanup_manual_suffix_format"> · %1$d para revisão manual</string>
+    <string name="home_cleanup_manual_only_hint_format">%1$d candidato(s) encontrado(s) aguardam revisão manual nas categorias abaixo.</string>
+    <string name="home_cleanup_in_progress">Movendo itens selecionados para a lixeira interna…</string>
+    <string name="home_total_cleanup_confirm_title">Confirmar limpeza total</string>
+    <string name="home_total_cleanup_confirm_action">Mover para a lixeira</string>
+    <string name="home_categories_section_title">Categorias identificadas</string>
+    <string name="home_categories_section_hint">Toque em uma categoria para revisar ou ajustar seleções.</string>
+    <string name="home_category_unscanned">Sem análise recente</string>
+    <string name="home_license_footer">Licença CC BY-NC 4.0 · Ricardo Coutinho Mello</string>
+    <string name="home_scan_start">Varredura</string>
+    <string name="home_scan_new">Varredura</string>
     <string name="home_scan_pause">Pausar</string>
     <string name="home_scan_resume">Retomar</string>
     <string name="home_scan_cancel">Cancelar</string>
-    <string name="home_scan_details">Detalhes</string>
+    <string name="home_scan_details">Detalhes da varredura</string>
     <string name="home_scan_metrics_format">%1$d arquivos · %2$d pastas · %3$s · %4$d erros</string>
     <string name="home_scan_storage_error">Armazenamento indisponível: %1$s</string>
 
@@ -283,4 +295,7 @@
     <string name="settings_add_exclusion_desc">Informe o caminho completo no armazenamento interno compartilhado que deve ser ignorado em todas as varreduras e limpezas.</string>
     <string name="settings_add_exclusion_hint">Caminho completo</string>
     <string name="settings_exclusion_save">Salvar</string>
+    <string name="settings_about_section">Sobre e licença</string>
+    <string name="settings_license_title">Creative Commons CC BY-NC 4.0</string>
+    <string name="settings_license_desc">Atribuição-NãoComercial 4.0 Internacional · Copyright (c) 2026 Ricardo Coutinho Mello. Fontes embutidas sob SIL OFL 1.1.</string>
 </resources>

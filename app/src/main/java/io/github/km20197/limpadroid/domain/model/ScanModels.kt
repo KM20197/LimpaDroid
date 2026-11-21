@@ -32,6 +32,19 @@ data class CategorySummary(
   val latestSessionId: String? = null,
 )
 
+data class OverallCleanupOverview(
+  val totalCandidatesCount: Int = 0,
+  val totalCandidatesBytes: Long = 0L,
+  val preselectedCount: Int = 0,
+  val preselectedTrashCount: Int = 0,
+  val preselectedTrashBytes: Long = 0L,
+  val preselectedMediaStoreCount: Int = 0,
+) {
+  val hasAnyCandidates: Boolean get() = totalCandidatesCount > 0
+  val hasPreselected: Boolean get() = preselectedCount > 0
+  val manualReviewCount: Int get() = (totalCandidatesCount - preselectedCount).coerceAtLeast(0)
+}
+
 data class WalkError(
   val path: String,
   val errorType: String,
