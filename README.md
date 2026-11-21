@@ -1,4 +1,5 @@
 # LimpaDroid
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24418797.svg)](https://doi.org/10.5281/zenodo.24418797)
 
 Aplicativo Android pessoal (Android 11 a Android 17 — `minSdk = 30`, `targetSdk = 37`) para análise e limpeza controlada do armazenamento interno compartilhado primário, 100% offline (sem permissão `INTERNET`) e com lixeira interna própria com retenção mínima de 30 dias.
 
