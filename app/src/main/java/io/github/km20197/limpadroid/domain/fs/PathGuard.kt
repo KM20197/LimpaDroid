@@ -27,6 +27,13 @@ interface PathGuard {
   fun hasProtectedDescendant(dir: Path): Boolean
   fun validate(path: Path, allowRoot: Boolean = false): PathGuardResult
   fun fixedExclusions(): List<Path>
+  fun isProtectedOrExcluded(path: Path): Boolean {
+    val rejected = validate(path, allowRoot = false) as? PathGuardResult.Rejected ?: return false
+    return rejected.reason == PathRejectionReason.FIXED_EXCLUSION ||
+      rejected.reason == PathRejectionReason.USER_EXCLUSION ||
+      rejected.reason == PathRejectionReason.SYMLINK_FORBIDDEN ||
+      rejected.reason == PathRejectionReason.OUTSIDE_ROOT
+  }
 }
 
 class DefaultPathGuard(
@@ -181,21 +188,28 @@ class DefaultPathGuard(
   }
 
   private fun resolveSafely(absolutePath: Path): Path? = runCatching {
-    if (Files.exists(absolutePath, LinkOption.NOFOLLOW_LINKS)) {
-      absolutePath.toRealPath()
-    } else {
-      val missingParts = ArrayDeque<String>()
-      var current: Path? = absolutePath.normalize()
-      while (current != null && !Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
-        val fileName = current.fileName?.toString()
-        if (fileName != null) {
-          missingParts.addFirst(fileName)
-        }
-        current = current.parent
-      }
-      val existingBase = current?.toRealPath() ?: return@runCatching null
-      missingParts.fold(existingBase) { acc, name -> acc.resolve(name) }.normalize()
+    val normalized = absolutePath.normalize()
+    if (Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
+      runCatching { normalized.toRealPath() }.getOrNull()?.let { return@runCatching it }
     }
+    val missingParts = ArrayDeque<String>()
+    var current: Path? = normalized
+    while (current != null) {
+      val resolvedCurrent = if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+        runCatching { current.toRealPath() }.getOrNull()
+      } else {
+        null
+      }
+      if (resolvedCurrent != null) {
+        return@runCatching missingParts.fold(resolvedCurrent) { acc, name -> acc.resolve(name) }.normalize()
+      }
+      val fileName = current.fileName?.toString()
+      if (fileName != null) {
+        missingParts.addFirst(fileName)
+      }
+      current = current.parent
+    }
+    null
   }.getOrNull()
 
   private fun resolveNonSymlinkForConfig(path: Path): Path? {

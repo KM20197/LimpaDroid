@@ -1,6 +1,7 @@
 package io.github.km20197.limpadroid.domain.scan
 
 import io.github.km20197.limpadroid.domain.fs.DefaultPathGuard
+import io.github.km20197.limpadroid.domain.fs.FileWalker
 import io.github.km20197.limpadroid.domain.model.Candidate
 import io.github.km20197.limpadroid.domain.model.Category
 import io.github.km20197.limpadroid.domain.model.Confidence
@@ -8,6 +9,7 @@ import io.github.km20197.limpadroid.domain.model.ScanEvent
 import io.github.km20197.limpadroid.domain.model.ScanScope
 import io.github.km20197.limpadroid.domain.model.WalkCheckpoint
 import io.github.km20197.limpadroid.domain.model.WalkError
+import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -158,6 +160,42 @@ class FullScanEngineTest {
     assertEquals(6000L, done.scannedBytes)
     assertEquals(3, done.errorCount)
     assertEquals(1, events.count { it is ScanEvent.Found })
+  }
+
+  @Test
+  fun `full scan across superfluous and duplicate engines ignores Android data and obb without errors`() = runTest {
+    val root = tempFolder.newFolder("full_android_guard").toPath().toRealPath()
+    val androidData = Files.createDirectories(root.resolve("Android/data/com.other"))
+    val androidObb = Files.createDirectories(root.resolve("Android/obb/com.other"))
+    val payload = ByteArray(5_000) { 0x22 }
+    Files.write(androidData.resolve("a.bin"), payload)
+    Files.write(androidObb.resolve("b.obb"), payload)
+    val dcim = Files.createDirectories(root.resolve("DCIM/Camera"))
+    val dl = Files.createDirectories(root.resolve("Download"))
+    Files.write(dcim.resolve("img.jpg"), payload)
+    Files.write(dl.resolve("img_copy.jpg"), payload)
+
+    val noAndroidRead: (java.nio.file.Path) -> Boolean = { path ->
+      val s = path.toString()
+      !s.endsWith("/Android/data") && !s.endsWith("/Android/obb")
+    }
+    val superfluous = SuperfluousScanEngine(fileWalker = FileWalker(readPermissionChecker = noAndroidRead))
+    val duplicate = DuplicateScanEngine(readPermissionChecker = noAndroidRead)
+    val fullEngine = FullScanEngine(listOf(superfluous, duplicate))
+
+    val events = fullEngine.scan(
+      ScanConfig(
+        sessionId = "s-full-guard",
+        scope = ScanScope.FULL,
+        rootPath = root,
+        pathGuard = DefaultPathGuard(root, "io.github.km20197.limpadroid"),
+      ),
+    ).toList()
+
+    val errors = events.filterIsInstance<ScanEvent.ErrorLogged>()
+    val done = events.filterIsInstance<ScanEvent.Done>().single()
+    assertTrue(errors.isEmpty())
+    assertEquals(0, done.errorCount)
   }
 
   private fun fakeEngine(

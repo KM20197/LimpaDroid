@@ -17,6 +17,7 @@ import java.nio.file.AccessDeniedException
 import java.nio.file.FileVisitOption
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.SimpleFileVisitor
@@ -108,13 +109,22 @@ class DuplicateScanEngine(
       )
     }
 
-    fun walkStorageTree(
+    fun walkTreeRoot(
+      walkRoot: Path,
+      initialCollectFiles: Boolean,
+      applyWhatsAppFilterAtRootChildren: Boolean,
       recordStatsAndErrors: Boolean,
       onRegularFile: (file: Path, size: Long, mtime: Long) -> Unit,
     ) {
+      if (!Files.exists(walkRoot, LinkOption.NOFOLLOW_LINKS) ||
+        Files.isSymbolicLink(walkRoot) ||
+        !Files.isDirectory(walkRoot, LinkOption.NOFOLLOW_LINKS)
+      ) {
+        return
+      }
       val dirDepthAllowedFiles = ArrayDeque<Boolean>()
       Files.walkFileTree(
-        storageRoot,
+        walkRoot,
         EnumSet.noneOf(FileVisitOption::class.java),
         Int.MAX_VALUE,
         object : SimpleFileVisitor<Path>() {
@@ -122,8 +132,8 @@ class DuplicateScanEngine(
             if (!flowJob.isActive) return FileVisitResult.TERMINATE
             if (Files.isSymbolicLink(dir)) return FileVisitResult.SKIP_SUBTREE
 
-            val isRoot = dir == storageRoot
-            if (!isRoot) {
+            val isWalkRoot = dir == walkRoot
+            if (!isWalkRoot) {
               val dirName = dir.fileName?.toString().orEmpty()
               if (dirName.startsWith(".")) {
                 return FileVisitResult.SKIP_SUBTREE
@@ -131,10 +141,19 @@ class DuplicateScanEngine(
               if (!config.pathGuard.isTraversalAllowed(dir)) {
                 return FileVisitResult.SKIP_SUBTREE
               }
-              val relSegments = relativeSegments(storageRoot, dir)
-              val decision = evaluateDirectoryPolicy(relSegments)
-              if (!decision.traverse) {
-                return FileVisitResult.SKIP_SUBTREE
+              val collectFilesHere = if (applyWhatsAppFilterAtRootChildren) {
+                val topLevelFolder = walkRoot.relativize(dir).getName(0).toString()
+                if (!WHATSAPP_MEDIA_SUBFOLDER_REGEX.matches(topLevelFolder)) {
+                  return FileVisitResult.SKIP_SUBTREE
+                }
+                true
+              } else {
+                val relSegments = relativeSegments(storageRoot, dir)
+                val decision = evaluateDirectoryPolicy(relSegments)
+                if (!decision.traverse) {
+                  return FileVisitResult.SKIP_SUBTREE
+                }
+                decision.collectFiles
               }
               if (!readPermissionChecker(dir)) {
                 if (recordStatsAndErrors) {
@@ -152,9 +171,24 @@ class DuplicateScanEngine(
                 scannedDirs += 1
                 lastProcessedPath = dir.toString()
               }
-              dirDepthAllowedFiles.addLast(decision.collectFiles)
+              dirDepthAllowedFiles.addLast(collectFilesHere)
             } else {
-              dirDepthAllowedFiles.addLast(true)
+              if (!config.pathGuard.isTraversalAllowed(dir)) {
+                return FileVisitResult.SKIP_SUBTREE
+              }
+              if (walkRoot != storageRoot && !readPermissionChecker(dir)) {
+                if (recordStatsAndErrors) {
+                  walkErrors.add(
+                    WalkError(
+                      path = dir.toString(),
+                      errorType = "AccessDeniedException",
+                      message = "Diretório sem permissão de leitura",
+                    ),
+                  )
+                }
+                return FileVisitResult.SKIP_SUBTREE
+              }
+              dirDepthAllowedFiles.addLast(initialCollectFiles)
             }
             return FileVisitResult.CONTINUE
           }
@@ -185,7 +219,7 @@ class DuplicateScanEngine(
 
           override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
             if (!flowJob.isActive) return FileVisitResult.TERMINATE
-            if (recordStatsAndErrors) {
+            if (recordStatsAndErrors && !config.pathGuard.isProtectedOrExcluded(file)) {
               walkErrors.add(
                 WalkError(
                   path = file.toString(),
@@ -201,7 +235,7 @@ class DuplicateScanEngine(
             if (dirDepthAllowedFiles.isNotEmpty()) {
               dirDepthAllowedFiles.removeLast()
             }
-            if (exc != null && recordStatsAndErrors) {
+            if (exc != null && recordStatsAndErrors && !config.pathGuard.isProtectedOrExcluded(dir)) {
               walkErrors.add(
                 WalkError(
                   path = dir.toString(),
@@ -214,6 +248,30 @@ class DuplicateScanEngine(
           }
         },
       )
+    }
+
+    fun walkStorageTree(
+      recordStatsAndErrors: Boolean,
+      onRegularFile: (file: Path, size: Long, mtime: Long) -> Unit,
+    ) {
+      walkTreeRoot(
+        walkRoot = storageRoot,
+        initialCollectFiles = true,
+        applyWhatsAppFilterAtRootChildren = false,
+        recordStatsAndErrors = recordStatsAndErrors,
+        onRegularFile = onRegularFile,
+      )
+      for (waMediaRel in WHATSAPP_ANDROID_MEDIA_ROOTS) {
+        if (!flowJob.isActive) break
+        val waMediaRoot = storageRoot.resolve(waMediaRel)
+        walkTreeRoot(
+          walkRoot = waMediaRoot,
+          initialCollectFiles = false,
+          applyWhatsAppFilterAtRootChildren = true,
+          recordStatsAndErrors = recordStatsAndErrors,
+          onRegularFile = onRegularFile,
+        )
+      }
     }
 
     val collidingSizes = HashSet<Long>()
@@ -512,52 +570,12 @@ class DuplicateScanEngine(
 
   private fun evaluateDirectoryPolicy(segments: List<String>): DirectoryPolicyDecision {
     if (segments.isEmpty()) return DirectoryPolicyDecision(traverse = true, collectFiles = true)
-    if (!segments[0].equals("Android", ignoreCase = true)) {
-      return DirectoryPolicyDecision(traverse = true, collectFiles = true)
+    if (segments[0].equals("Android", ignoreCase = true)) {
+      // Android/ não é percorrido diretamente para evitar tocar em Android/data e Android/obb;
+      // as raízes de mídia do WhatsApp em Android/media são percorridas diretamente em walkStorageTree.
+      return DirectoryPolicyDecision(traverse = false, collectFiles = false)
     }
-
-    // Dentro de Android/, somente as pastas de mídia do WhatsApp (seção 7.5) são consideradas
-    return when (segments.size) {
-      1 -> DirectoryPolicyDecision(traverse = true, collectFiles = false)
-      2 -> DirectoryPolicyDecision(
-        traverse = segments[1].equals("media", ignoreCase = true),
-        collectFiles = false,
-      )
-      3 -> DirectoryPolicyDecision(
-        traverse = segments[2].equals(WA_PKG, ignoreCase = true) ||
-          segments[2].equals(WA_BUSINESS_PKG, ignoreCase = true),
-        collectFiles = false,
-      )
-      4 -> {
-        val expectedAppDir = if (segments[2].equals(WA_PKG, ignoreCase = true)) {
-          "WhatsApp"
-        } else {
-          "WhatsApp Business"
-        }
-        DirectoryPolicyDecision(
-          traverse = segments[3].equals(expectedAppDir, ignoreCase = true),
-          collectFiles = false,
-        )
-      }
-      5 -> DirectoryPolicyDecision(
-        traverse = segments[4].equals("Media", ignoreCase = true),
-        collectFiles = false,
-      )
-      6 -> {
-        val allowedSubfolder = WHATSAPP_MEDIA_SUBFOLDER_REGEX.matches(segments[5])
-        DirectoryPolicyDecision(
-          traverse = allowedSubfolder,
-          collectFiles = allowedSubfolder,
-        )
-      }
-      else -> {
-        val allowedSubfolder = WHATSAPP_MEDIA_SUBFOLDER_REGEX.matches(segments[5])
-        DirectoryPolicyDecision(
-          traverse = allowedSubfolder,
-          collectFiles = allowedSubfolder,
-        )
-      }
-    }
+    return DirectoryPolicyDecision(traverse = true, collectFiles = true)
   }
 
   private data class DirectoryPolicyDecision(
@@ -578,8 +596,10 @@ class DuplicateScanEngine(
 
     private const val PROGRESS_INTERVAL_MS = 250L
     private const val SCOPE_DUPLICATE_MARKER = "__DUPLICATE_SCAN__"
-    private const val WA_PKG = "com.whatsapp"
-    private const val WA_BUSINESS_PKG = "com.whatsapp.w4b"
+    private val WHATSAPP_ANDROID_MEDIA_ROOTS = listOf(
+      "Android/media/com.whatsapp/WhatsApp/Media",
+      "Android/media/com.whatsapp.w4b/WhatsApp Business/Media",
+    )
     private val WHATSAPP_MEDIA_SUBFOLDER_REGEX =
       Regex("^WhatsApp( Business)? (Images|Video|Audio|Voice Notes)$")
   }

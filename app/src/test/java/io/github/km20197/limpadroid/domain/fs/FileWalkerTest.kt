@@ -84,6 +84,29 @@ class FileWalkerTest {
   }
 
   @Test
+  fun `walk ignores unreadable Android data and obb without emitting errors`() = runTest {
+    val androidData = Files.createDirectories(root.resolve("Android/data/com.other"))
+    Files.writeString(androidData.resolve("secret.bin"), "abc")
+    val androidObb = Files.createDirectories(root.resolve("Android/obb/com.other"))
+    Files.writeString(androidObb.resolve("main.obb"), "obb")
+    val okFile = Files.writeString(Files.createDirectories(root.resolve("Download")).resolve("ok.txt"), "hi")
+
+    val strictWalker = FileWalker(
+      readPermissionChecker = { path ->
+        val s = path.toString()
+        !s.endsWith("/Android/data") && !s.endsWith("/Android/obb")
+      },
+    )
+    val events = strictWalker.walk(WalkConfig(rootPath = root, pathGuard = guard)).toList()
+    val errors = events.filterIsInstance<WalkEvent.Error>()
+    val completed = events.filterIsInstance<WalkEvent.Completed>().single()
+
+    assertTrue(errors.isEmpty())
+    assertEquals(0, completed.errorCount)
+    assertTrue(events.filterIsInstance<WalkEvent.Entry>().any { it.entry.path == okFile.toString() })
+  }
+
+  @Test
   fun `walk skips completed subtrees and preserves exact settled counts on resume`() = runTest {
     val doneDir = Files.createDirectories(root.resolve("PartialParent/DoneChild"))
     val skippedFile = Files.writeString(doneDir.resolve("already.txt"), "old")

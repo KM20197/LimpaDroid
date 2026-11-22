@@ -67,6 +67,12 @@ class PathGuardTest {
     assertFalse(guard.isAllowed(trashFile))
     assertFalse(guard.isAllowed(userExcluded))
     assertFalse(guard.isTraversalAllowed(root.resolve("android/DATA")))
+    assertTrue(guard.isProtectedOrExcluded(root.resolve("Android/data")))
+    assertTrue(guard.isProtectedOrExcluded(root.resolve("Android/obb")))
+    assertTrue(guard.isProtectedOrExcluded(androidDataFile))
+    assertTrue(guard.isProtectedOrExcluded(androidObbFile))
+    assertTrue(guard.isProtectedOrExcluded(userExcluded))
+    assertFalse(guard.isProtectedOrExcluded(root.resolve("DCIM/Camera")))
   }
 
   @Test

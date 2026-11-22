@@ -214,6 +214,43 @@ class DuplicateScanEngineTest {
     assertTrue(found.none { it.candidate.preselected })
   }
 
+  @Test
+  fun `does not touch or log errors for Android data and obb while scanning WhatsApp media`() = runTest {
+    val root = tempFolder.newFolder("dup_android_guard").toPath().toRealPath()
+    val androidData = Files.createDirectories(root.resolve("Android/data/com.app"))
+    val androidObb = Files.createDirectories(root.resolve("Android/obb/com.app"))
+    val payload = ByteArray(5_000) { 0x19 }
+    Files.write(androidData.resolve("ignored.bin"), payload)
+    Files.write(androidObb.resolve("ignored.obb"), payload)
+
+    val dcimDir = Files.createDirectories(root.resolve("DCIM/Camera"))
+    val waImages = Files.createDirectories(root.resolve("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images"))
+    Files.write(dcimDir.resolve("pic.jpg"), payload)
+    Files.write(waImages.resolve("wa_pic.jpg"), payload)
+
+    val engine = DuplicateScanEngine(
+      readPermissionChecker = { path ->
+        val s = path.toString()
+        !s.endsWith("/Android/data") && !s.endsWith("/Android/obb")
+      },
+    )
+    val config = ScanConfig(
+      sessionId = "s-android-guard",
+      scope = ScanScope.DUPLICATE,
+      rootPath = root,
+      pathGuard = DefaultPathGuard(root, "io.github.km20197.limpadroid"),
+    )
+
+    val events = engine.scan(config).toList()
+    val errors = events.filterIsInstance<ScanEvent.ErrorLogged>()
+    val found = events.filterIsInstance<ScanEvent.Found>()
+    val done = events.filterIsInstance<ScanEvent.Done>().single()
+
+    assertTrue(errors.isEmpty())
+    assertEquals(0, done.errorCount)
+    assertEquals(2, found.size)
+  }
+
   private class InMemoryHashCacheRepository : HashCacheRepository {
     val storage = LinkedHashMap<String, CachedHashEntry>()
     var upsertCalls = 0

@@ -290,13 +290,15 @@ class FileWalker(
               wasInterrupted = true
               return FileVisitResult.TERMINATE
             }
-            emitError(file, exc)
+            if (!config.pathGuard.isProtectedOrExcluded(file)) {
+              emitError(file, exc)
+            }
             return FileVisitResult.CONTINUE
           }
 
           override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
             val finishedFrame = if (frameStack.isNotEmpty()) frameStack.removeLast() else null
-            if (exc != null) {
+            if (exc != null && !config.pathGuard.isProtectedOrExcluded(dir)) {
               emitError(dir, exc)
             }
             if (!isRunning()) {
