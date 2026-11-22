@@ -96,8 +96,4 @@ Este projeto é distribuído sob a licença **Creative Commons Attribution-NonCo
 
 ## Documentação complementar
 
-- `LICENSE` — licença Creative Commons CC BY-NC 4.0 em nome de Ricardo Coutinho Mello.
-- `DECISOES.md` — verificações técnicas, divergências e decisões definitivas registradas.
-- `docs/AVALIACOES.md` — registro das auditorias independentes da Seção 14 por fase.
-- `docs/ROTEIRO_TESTE.md` — roteiro de validação manual em dispositivo físico.
 - `licenses/OFL.txt` — licença SIL Open Font License 1.1 para as fontes embutidas.
