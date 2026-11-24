@@ -194,7 +194,10 @@ class DefaultAppContainer(
   }
 
   private val trashStorage: TrashStorage by lazy {
-    TrashStorage(mediaStoreDeleteGateway = mediaStoreDeleteGateway)
+    TrashStorage(
+      mediaStoreDeleteGateway = mediaStoreDeleteGateway,
+      contentResolver = context.contentResolver,
+    )
   }
 
   private val systemTrashGateway: SystemTrashGateway by lazy {

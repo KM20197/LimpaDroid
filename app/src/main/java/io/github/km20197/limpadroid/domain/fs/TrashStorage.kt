@@ -1,5 +1,10 @@
 package io.github.km20197.limpadroid.domain.fs
 
+import android.content.ContentResolver
+import android.content.ContentUris
+import android.net.Uri
+import android.os.Bundle
+import android.provider.MediaStore
 import io.github.km20197.limpadroid.domain.model.TrashMetadataPayload
 import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
@@ -50,6 +55,7 @@ class InsufficientStorageException(message: String) : IOException(message)
 class TrashStorage(
   private val usableSpaceProvider: (Path) -> Long = { path -> defaultUsableSpaceBytes(path) },
   private val mediaStoreDeleteGateway: MediaStoreDeleteGateway = MediaStoreDeleteGateway.NoOp,
+  private val contentResolver: ContentResolver? = null,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -268,6 +274,96 @@ class TrashStorage(
   }
 
   /**
+   * Verifica se [filePath] possui um MediaStore URI associado e invoca a exclusão definitiva
+   * diretamente via [ContentResolver] + MediaStore API, garantindo a remoção do índice e a
+   * liberação real do armazenamento do sistema.
+   */
+  @Suppress("DEPRECATION")
+  suspend fun deletePermanentViaMediaStore(
+    resolver: ContentResolver,
+    filePath: Path,
+  ): Boolean = withContext(Dispatchers.IO) {
+    val candidates = buildCandidatePathStrings(filePath)
+    if (candidates.isEmpty()) return@withContext false
+
+    val filesCollection = MediaStore.Files.getContentUri("external")
+    val projection = arrayOf(
+      MediaStore.MediaColumns._ID,
+      MediaStore.Files.FileColumns.MEDIA_TYPE,
+      MediaStore.MediaColumns.DATA,
+    )
+    val placeholders = candidates.joinToString(",") { "?" }
+    val queryArgs = Bundle().apply {
+      putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+      putString(
+        ContentResolver.QUERY_ARG_SQL_SELECTION,
+        "${MediaStore.MediaColumns.DATA} IN ($placeholders)",
+      )
+      putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, candidates.toTypedArray())
+    }
+
+    val cursor = runCatching {
+      resolver.query(filesCollection, projection, queryArgs, null)
+    }.getOrNull() ?: return@withContext false
+
+    val matchedUris = mutableListOf<Pair<Uri, Uri>>()
+    val seenIds = HashSet<Long>()
+    cursor.use { c ->
+      val idCol = c.getColumnIndex(MediaStore.MediaColumns._ID)
+      val mediaTypeCol = c.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
+      val dataCol = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+      if (idCol < 0 || dataCol < 0) return@use
+
+      while (c.moveToNext()) {
+        currentCoroutineContext().ensureActive()
+        val rowPath = c.getString(dataCol)?.takeIf { it.isNotBlank() } ?: continue
+        if (rowPath !in candidates) continue
+
+        val id = c.getLong(idCol)
+        if (!seenIds.add(id)) continue
+
+        val mediaType = if (mediaTypeCol >= 0) {
+          c.getInt(mediaTypeCol)
+        } else {
+          MediaStore.Files.FileColumns.MEDIA_TYPE_NONE
+        }
+        val typedCollection = when (mediaType) {
+          MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+          MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+          MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+          else -> filesCollection
+        }
+        matchedUris.add(
+          ContentUris.withAppendedId(typedCollection, id) to
+            ContentUris.withAppendedId(filesCollection, id),
+        )
+      }
+    }
+
+    if (matchedUris.isEmpty()) return@withContext false
+
+    val deleteExtras = Bundle().apply {
+      putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+    }
+    var anyDeleted = false
+    for ((primaryUri, filesUri) in matchedUris) {
+      currentCoroutineContext().ensureActive()
+      val deletedPrimary = tryDeleteMediaUri(resolver, primaryUri, deleteExtras)
+      val deleted = if (deletedPrimary > 0) {
+        true
+      } else if (primaryUri != filesUri) {
+        tryDeleteMediaUri(resolver, filesUri, deleteExtras) > 0
+      } else {
+        false
+      }
+      if (deleted) {
+        anyDeleted = true
+      }
+    }
+    anyDeleted
+  }
+
+  /**
    * Verifica se [filePath] (ou [originalPath], caso não exista mais em disco) possui um MediaStore URI
    * associado e invoca a exclusão definitiva via ContentResolver antes da limpeza local em disco.
    */
@@ -280,17 +376,11 @@ class TrashStorage(
       !Files.isSymbolicLink(filePath) &&
       Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)
     ) {
-      if (mediaStoreDeleteGateway.findAssociatedUri(filePath) != null &&
-        mediaStoreDeleteGateway.deleteByAssociatedUri(filePath)
-      ) {
+      if (deleteSinglePathViaMediaStore(filePath)) {
         deletedViaMediaStore = true
       }
     }
-    if (originalPath != null &&
-      !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
-      mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null &&
-      mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
-    ) {
+    if (deleteOriginalPathUriIfAbsent(originalPath)) {
       deletedViaMediaStore = true
     }
     deletedViaMediaStore
@@ -311,20 +401,61 @@ class TrashStorage(
         currentCoroutineContext().ensureActive()
         deleteMediaStoreUriIfPresent(filePath = file)
       }
-      if (originalPath != null &&
-        !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
-        mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null
-      ) {
-        mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
-      }
-    } else if (originalPath != null &&
-      !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
-      mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null
-    ) {
-      mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
+      deleteOriginalPathUriIfAbsent(originalPath)
+    } else {
+      deleteOriginalPathUriIfAbsent(originalPath)
     }
     deleteRecursively(validated.entryDir)
     pruneEmptyDateDir(validated.dayDir)
+  }
+
+  private suspend fun deleteOriginalPathUriIfAbsent(originalPath: Path?): Boolean {
+    if (originalPath == null || Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS)) {
+      return false
+    }
+    return deleteSinglePathViaMediaStore(originalPath)
+  }
+
+  private suspend fun deleteSinglePathViaMediaStore(targetPath: Path): Boolean {
+    val resolver = contentResolver
+    if (resolver != null) {
+      return deletePermanentViaMediaStore(resolver, targetPath)
+    }
+    return mediaStoreDeleteGateway.findAssociatedUri(targetPath) != null &&
+      mediaStoreDeleteGateway.deleteByAssociatedUri(targetPath)
+  }
+
+  @Suppress("DEPRECATION")
+  private fun tryDeleteMediaUri(resolver: ContentResolver, uri: Uri, extras: Bundle): Int {
+    val withExtras = try {
+      resolver.delete(uri, extras)
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (_: Throwable) {
+      0
+    }
+    if (withExtras > 0) return withExtras
+
+    return try {
+      resolver.delete(uri, null, null)
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (_: Throwable) {
+      0
+    }
+  }
+
+  private fun buildCandidatePathStrings(filePath: Path): Set<String> {
+    val result = linkedSetOf<String>()
+    val normalized = filePath.toAbsolutePath().normalize().toString()
+    if (normalized.isNotBlank()) {
+      result.add(normalized)
+    }
+    runCatching { filePath.toRealPath(LinkOption.NOFOLLOW_LINKS).toString() }
+      .getOrNull()
+      ?.takeIf { it.isNotBlank() }
+      ?.let { result.add(it) }
+    return result
   }
 
   private fun collectRegularFiles(dir: Path): List<Path> {
