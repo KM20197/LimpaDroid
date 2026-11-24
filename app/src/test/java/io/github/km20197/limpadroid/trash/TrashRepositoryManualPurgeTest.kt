@@ -66,7 +66,8 @@ class TrashRepositoryManualPurgeTest {
     assertEquals(0, summary.purgedCount)
     assertEquals(0L, summary.freedBytes)
     assertTrue(Files.exists(outsideFile))
-    assertEquals(TrashEntryState.IN_TRASH.name, dao.getById(entry.id)?.state)
+    assertEquals(TrashEntryState.FAILED.name, dao.getById(entry.id)?.state)
+    assertTrue(dao.getById(entry.id)?.failureReason != null)
     assertTrue(historyDao.records.isEmpty())
     assertTrue(logger.events.any { it.first == "TRASH_PURGE_MANUAL_FAILED" })
   }
@@ -102,7 +103,8 @@ class TrashRepositoryManualPurgeTest {
 
     assertEquals(0, summary.purgedCount)
     assertEquals(0L, summary.freedBytes)
-    assertEquals(TrashEntryState.IN_TRASH.name, dao.getById(entry.id)?.state)
+    assertEquals(TrashEntryState.FAILED.name, dao.getById(entry.id)?.state)
+    assertTrue(dao.getById(entry.id)?.failureReason != null)
     assertTrue(historyDao.records.isEmpty())
     assertTrue(logger.events.any { it.first == "TRASH_PURGE_MANUAL_FAILED" })
   }

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -18,6 +19,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate release tag format
+        run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag inválida '${GITHUB_REF_NAME}'. Use o formato vMAJOR.MINOR.PATCH, por exemplo v1.0.1."
+            exit 1
+          fi
+
       - name: Validate release signing secrets
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
@@ -38,6 +47,25 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Require tagged commit on main with a successful CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::O commit da tag (${GITHUB_SHA}) não pertence ao ramo main."
+            exit 1
+          fi
+          successful_runs="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow ci.yml \
+            --commit "${GITHUB_SHA}" --status success --json databaseId --jq 'length')"
+          if [ "${successful_runs}" -lt 1 ]; then
+            echo "::error::Nenhuma execução bem-sucedida do CI para o commit ${GITHUB_SHA}."
+            exit 1
+          fi
 
       - name: Set up JDK 21 (Temurin)
         uses: actions/setup-java@v6.3.0

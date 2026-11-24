@@ -46,7 +46,7 @@ data class ValidatedTrashPayload(
 class InsufficientStorageException(message: String) : IOException(message)
 
 class TrashStorage(
-  private val usableSpaceProvider: (Path) -> Long = { path -> Files.getFileStore(path).usableSpace },
+  private val usableSpaceProvider: (Path) -> Long = { path -> defaultUsableSpaceBytes(path) },
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -426,10 +426,16 @@ class TrashStorage(
 
     val destParent = destination.parent ?: destination
     Files.createDirectories(destParent)
-    val usableBytes = runCatching { usableSpaceProvider(destParent) }.getOrDefault(Long.MAX_VALUE)
-    if (usableBytes < expectedSizeBytes) {
+    val usableBytes = runCatching { usableSpaceProvider(destParent) }.getOrDefault(0L)
+    val safetyMargin = maxOf(COPY_SAFETY_MARGIN_MIN_BYTES, expectedSizeBytes / 20L)
+    val requiredBytes = if (expectedSizeBytes > Long.MAX_VALUE - safetyMargin) {
+      Long.MAX_VALUE
+    } else {
+      expectedSizeBytes + safetyMargin
+    }
+    if (usableBytes < requiredBytes) {
       throw InsufficientStorageException(
-        "Espaço livre insuficiente para mover com segurança (${usableBytes} B disponíveis, ${expectedSizeBytes} B necessários).",
+        "Espaço livre insuficiente para mover com segurança (${usableBytes} B disponíveis, ${requiredBytes} B necessários com margem).",
       )
     }
 
@@ -609,10 +615,17 @@ class TrashStorage(
     const val METADATA_FILE_NAME = "metadata.json"
 
     private const val MAX_RESTORE_ATTEMPTS = 10_000
+    private const val COPY_SAFETY_MARGIN_MIN_BYTES = 1024L * 1024L
     private val DAY_DIR_REGEX = Regex("^\\d{8}$")
     private val ENTRY_ID_REGEX = Regex("^[A-Za-z0-9._-]{1,128}$")
 
     private val DAY_FORMATTER: DateTimeFormatter =
       DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC)
+
+    private fun defaultUsableSpaceBytes(path: Path): Long {
+      val fileUsable = runCatching { path.toFile().usableSpace }.getOrNull()
+      if (fileUsable != null && fileUsable > 0L) return fileUsable
+      return runCatching { Files.getFileStore(path).usableSpace }.getOrDefault(0L)
+    }
   }
 }

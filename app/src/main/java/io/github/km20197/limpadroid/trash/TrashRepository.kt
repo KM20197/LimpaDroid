@@ -624,12 +624,34 @@ class TrashRepository(
     if (entity.state != TrashEntryState.IN_TRASH.name) return@withLock PurgeSummary(0, 0L)
 
     val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
-    // Caminho inválido ou falha de E/S não devem escapar como exceção para a interface: nada é apagado,
-    // a entrada permanece na lixeira e o chamador recebe um resumo vazio (0 item excluído).
     try {
       trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entity.trashPath))
     } catch (ce: CancellationException) {
       throw ce
+    } catch (ipe: java.nio.file.InvalidPathException) {
+      val reason = ipe.message ?: "Caminho da lixeira malformado"
+      trashEntryDao.updateLifecycleState(
+        id = entryId,
+        state = TrashEntryState.FAILED.name,
+        restoredAt = null,
+        restoredPath = null,
+        purgedAt = null,
+        failureReason = reason,
+      )
+      scanLogger.logEvent("TRASH_PURGE_MANUAL_FAILED", "id=$entryId reason=$reason")
+      return@withLock PurgeSummary(0, 0L)
+    } catch (se: SecurityException) {
+      val reason = se.message ?: "Caminho da lixeira inválido ou fora da área gerenciada"
+      trashEntryDao.updateLifecycleState(
+        id = entryId,
+        state = TrashEntryState.FAILED.name,
+        restoredAt = null,
+        restoredPath = null,
+        purgedAt = null,
+        failureReason = reason,
+      )
+      scanLogger.logEvent("TRASH_PURGE_MANUAL_FAILED", "id=$entryId reason=$reason")
+      return@withLock PurgeSummary(0, 0L)
     } catch (t: Throwable) {
       scanLogger.logEvent("TRASH_PURGE_MANUAL_FAILED", "id=$entryId reason=${t.message}")
       return@withLock PurgeSummary(0, 0L)

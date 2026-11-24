@@ -308,4 +308,79 @@ class TrashStorageTest {
     assertTrue(Files.exists(sourceFile, LinkOption.NOFOLLOW_LINKS))
     assertFalse(Files.exists(lowSpaceStorage.resolvePayloadPath(entryDir), LinkOption.NOFOLLOW_LINKS))
   }
+
+  @Test
+  fun `moveToTrash throws InsufficientStorageException when usableSpaceProvider fails or lacks safety margin`() = runTest {
+    val dlDir = Files.createDirectories(storageRoot.resolve("Download"))
+    val content = "conteudo-para-teste-margem"
+    val fileSize = content.toByteArray(Charsets.UTF_8).size.toLong()
+
+    // 1) Falha ao consultar espaço livre deve falhar de modo seguro (0 B), sem desativar a checagem
+    val failingSpaceStorage = TrashStorage(usableSpaceProvider = { error("statvfs indisponível") })
+    val source1 = Files.writeString(dlDir.resolve("falha_espaco.bin"), content)
+    val trashRoot1 = failingSpaceStorage.resolveTrashRoot(storageRoot)
+    val entryDir1 = failingSpaceStorage.allocateEntryDir(trashRoot1, "entry-space-err", 1_700_000_000_000L)
+
+    var threwOnError = false
+    try {
+      failingSpaceStorage.moveToTrash(
+        source = source1,
+        trashRoot = trashRoot1,
+        entryDir = entryDir1,
+        forceCopyFallback = true,
+        metadataBuilder = { dest, size, sha, mtime ->
+          TrashMetadataPayload(
+            id = "entry-space-err",
+            originalPath = source1.toString(),
+            trashPath = dest.toString(),
+            sizeBytes = size,
+            sha256 = sha,
+            originalMtime = mtime,
+            category = "SUPERFLUOUS",
+            ruleId = "TEST",
+            deletedAt = 1_700_000_000_000L,
+            expiresAt = 1_702_592_000_000L,
+          )
+        },
+      )
+    } catch (_: InsufficientStorageException) {
+      threwOnError = true
+    }
+    assertTrue(threwOnError)
+    assertTrue(Files.exists(source1, LinkOption.NOFOLLOW_LINKS))
+
+    // 2) Espaço exato igual ao tamanho do arquivo sem margem de segurança também deve ser recusado
+    val exactSpaceStorage = TrashStorage(usableSpaceProvider = { fileSize })
+    val source2 = Files.writeString(dlDir.resolve("sem_margem.bin"), content)
+    val trashRoot2 = exactSpaceStorage.resolveTrashRoot(storageRoot)
+    val entryDir2 = exactSpaceStorage.allocateEntryDir(trashRoot2, "entry-no-margin", 1_700_000_000_000L)
+
+    var threwWithoutMargin = false
+    try {
+      exactSpaceStorage.moveToTrash(
+        source = source2,
+        trashRoot = trashRoot2,
+        entryDir = entryDir2,
+        forceCopyFallback = true,
+        metadataBuilder = { dest, size, sha, mtime ->
+          TrashMetadataPayload(
+            id = "entry-no-margin",
+            originalPath = source2.toString(),
+            trashPath = dest.toString(),
+            sizeBytes = size,
+            sha256 = sha,
+            originalMtime = mtime,
+            category = "SUPERFLUOUS",
+            ruleId = "TEST",
+            deletedAt = 1_700_000_000_000L,
+            expiresAt = 1_702_592_000_000L,
+          )
+        },
+      )
+    } catch (_: InsufficientStorageException) {
+      threwWithoutMargin = true
+    }
+    assertTrue(threwWithoutMargin)
+    assertTrue(Files.exists(source2, LinkOption.NOFOLLOW_LINKS))
+  }
 }
