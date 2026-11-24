@@ -134,11 +134,17 @@ class HomeViewModel(
   }
 
   fun refreshPermissions() {
+    val hasAllFiles = permissionChecker.hasAllFilesAccess()
     _uiState.update { current ->
       current.copy(
-        hasAllFilesAccess = permissionChecker.hasAllFilesAccess(),
+        hasAllFilesAccess = hasAllFiles,
         hasNotificationPermission = permissionChecker.hasNotificationPermission(),
       )
+    }
+    if (hasAllFiles) {
+      viewModelScope.launch {
+        runCatching { trashController.refreshSystemTrashStats() }
+      }
     }
   }
 

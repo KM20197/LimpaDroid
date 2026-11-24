@@ -18,6 +18,8 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -47,6 +49,7 @@ class InsufficientStorageException(message: String) : IOException(message)
 
 class TrashStorage(
   private val usableSpaceProvider: (Path) -> Long = { path -> defaultUsableSpaceBytes(path) },
+  private val mediaStoreDeleteGateway: MediaStoreDeleteGateway = MediaStoreDeleteGateway.NoOp,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -264,10 +267,89 @@ class TrashStorage(
     )
   }
 
-  suspend fun deleteTrashedPayload(trashRoot: Path, trashPath: Path) = withContext(Dispatchers.IO) {
+  /**
+   * Verifica se [filePath] (ou [originalPath], caso não exista mais em disco) possui um MediaStore URI
+   * associado e invoca a exclusão definitiva via ContentResolver antes da limpeza local em disco.
+   */
+  suspend fun deleteMediaStoreUriIfPresent(
+    filePath: Path,
+    originalPath: Path? = null,
+  ): Boolean = withContext(Dispatchers.IO) {
+    var deletedViaMediaStore = false
+    if (Files.exists(filePath, LinkOption.NOFOLLOW_LINKS) &&
+      !Files.isSymbolicLink(filePath) &&
+      Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)
+    ) {
+      if (mediaStoreDeleteGateway.findAssociatedUri(filePath) != null &&
+        mediaStoreDeleteGateway.deleteByAssociatedUri(filePath)
+      ) {
+        deletedViaMediaStore = true
+      }
+    }
+    if (originalPath != null &&
+      !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
+      mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null &&
+      mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
+    ) {
+      deletedViaMediaStore = true
+    }
+    deletedViaMediaStore
+  }
+
+  suspend fun deleteTrashedPayload(
+    trashRoot: Path,
+    trashPath: Path,
+    originalPath: Path? = null,
+  ) = withContext(Dispatchers.IO) {
     val validated = validatePayloadPath(trashRoot, trashPath)
+    val payload = validated.payloadPath
+    if (Files.isRegularFile(payload, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(payload)) {
+      deleteMediaStoreUriIfPresent(filePath = payload, originalPath = originalPath)
+    } else if (Files.isDirectory(payload, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(payload)) {
+      val files = collectRegularFiles(payload)
+      for (file in files) {
+        currentCoroutineContext().ensureActive()
+        deleteMediaStoreUriIfPresent(filePath = file)
+      }
+      if (originalPath != null &&
+        !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
+        mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null
+      ) {
+        mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
+      }
+    } else if (originalPath != null &&
+      !Files.exists(originalPath, LinkOption.NOFOLLOW_LINKS) &&
+      mediaStoreDeleteGateway.findAssociatedUri(originalPath) != null
+    ) {
+      mediaStoreDeleteGateway.deleteByAssociatedUri(originalPath)
+    }
     deleteRecursively(validated.entryDir)
     pruneEmptyDateDir(validated.dayDir)
+  }
+
+  private fun collectRegularFiles(dir: Path): List<Path> {
+    val files = mutableListOf<Path>()
+    runCatching {
+      Files.walkFileTree(
+        dir,
+        object : SimpleFileVisitor<Path>() {
+          override fun preVisitDirectory(d: Path, attrs: BasicFileAttributes): FileVisitResult {
+            if (Files.isSymbolicLink(d)) return FileVisitResult.SKIP_SUBTREE
+            return FileVisitResult.CONTINUE
+          }
+
+          override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+            if (attrs.isRegularFile && !attrs.isSymbolicLink && !Files.isSymbolicLink(file)) {
+              files.add(file)
+            }
+            return FileVisitResult.CONTINUE
+          }
+
+          override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+        },
+      )
+    }
+    return files
   }
 
   fun writeMetadata(metadataPath: Path, payload: TrashMetadataPayload) {
@@ -427,15 +509,14 @@ class TrashStorage(
     val destParent = destination.parent ?: destination
     Files.createDirectories(destParent)
     val usableBytes = runCatching { usableSpaceProvider(destParent) }.getOrDefault(0L)
-    val safetyMargin = maxOf(COPY_SAFETY_MARGIN_MIN_BYTES, expectedSizeBytes / 20L)
-    val requiredBytes = if (expectedSizeBytes > Long.MAX_VALUE - safetyMargin) {
+    val requiredBytes = if (expectedSizeBytes > Long.MAX_VALUE - COPY_SAFETY_MARGIN_MIN_BYTES) {
       Long.MAX_VALUE
     } else {
-      expectedSizeBytes + safetyMargin
+      expectedSizeBytes + COPY_SAFETY_MARGIN_MIN_BYTES
     }
     if (usableBytes < requiredBytes) {
       throw InsufficientStorageException(
-        "Espaço livre insuficiente para mover com segurança (${usableBytes} B disponíveis, ${requiredBytes} B necessários com margem).",
+        "Espaço livre insuficiente para mover com segurança (${usableBytes} B disponíveis, ${requiredBytes} B necessários com margem de 100 MiB).",
       )
     }
 
@@ -615,17 +696,14 @@ class TrashStorage(
     const val METADATA_FILE_NAME = "metadata.json"
 
     private const val MAX_RESTORE_ATTEMPTS = 10_000
-    private const val COPY_SAFETY_MARGIN_MIN_BYTES = 1024L * 1024L
+    const val COPY_SAFETY_MARGIN_MIN_BYTES = 100L * 1024L * 1024L
     private val DAY_DIR_REGEX = Regex("^\\d{8}$")
     private val ENTRY_ID_REGEX = Regex("^[A-Za-z0-9._-]{1,128}$")
 
     private val DAY_FORMATTER: DateTimeFormatter =
       DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC)
 
-    private fun defaultUsableSpaceBytes(path: Path): Long {
-      val fileUsable = runCatching { path.toFile().usableSpace }.getOrNull()
-      if (fileUsable != null && fileUsable > 0L) return fileUsable
-      return runCatching { Files.getFileStore(path).usableSpace }.getOrDefault(0L)
-    }
+    private fun defaultUsableSpaceBytes(path: Path): Long =
+      runCatching { path.toFile().usableSpace }.getOrDefault(0L)
   }
 }

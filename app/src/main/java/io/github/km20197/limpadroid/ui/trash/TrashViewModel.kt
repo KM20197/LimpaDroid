@@ -53,6 +53,13 @@ class TrashViewModel(
       } catch (_: Throwable) {
         // O PurgeWorker periódico repete a manutenção.
       }
+      try {
+        trashController.refreshSystemTrashStats()
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (_: Throwable) {
+        // Ignora erro transitório ao consultar a lixeira do Android.
+      }
     }
     viewModelScope.launch {
       trashController.inTrashEntries.collect { list ->
@@ -66,6 +73,18 @@ class TrashViewModel(
     }
   }
 
+  fun refreshSystemTrash() {
+    viewModelScope.launch {
+      try {
+        trashController.refreshSystemTrashStats()
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (_: Throwable) {
+        // Ignora erro transitório ao consultar a lixeira do Android.
+      }
+    }
+  }
+
   fun requestRestore(entry: TrashEntry) {
     _uiState.update { it.copy(pendingConfirmation = TrashConfirmation.Restore(entry)) }
   }
@@ -75,7 +94,8 @@ class TrashViewModel(
   }
 
   fun requestEmptyTrash() {
-    if (_uiState.value.entries.isEmpty()) return
+    val state = _uiState.value
+    if (state.entries.isEmpty() && state.stats.systemTrashCount <= 0) return
     _uiState.update { it.copy(pendingConfirmation = TrashConfirmation.EmptyTrash) }
   }
 
@@ -88,7 +108,9 @@ class TrashViewModel(
   }
 
   fun confirmPendingAction() {
-    val action = _uiState.value.pendingConfirmation ?: return
+    val state = _uiState.value
+    val action = state.pendingConfirmation ?: return
+    val hadItemsToPurge = state.entries.isNotEmpty() || state.stats.systemTrashCount > 0
     _uiState.update { it.copy(pendingConfirmation = null, isBusy = true) }
 
     viewModelScope.launch {
@@ -112,10 +134,14 @@ class TrashViewModel(
           }
           TrashConfirmation.EmptyTrash -> {
             val summary = trashController.emptyTrash()
-            TrashFeedback.Emptied(
-              count = summary.purgedCount,
-              formattedBytes = ByteFormatter.format(summary.freedBytes),
-            )
+            if (hadItemsToPurge && summary.purgedCount == 0) {
+              TrashFeedback.Error(EMPTY_FAILED_MESSAGE)
+            } else {
+              TrashFeedback.Emptied(
+                count = summary.purgedCount,
+                formattedBytes = ByteFormatter.format(summary.freedBytes),
+              )
+            }
           }
         }
       } catch (ce: CancellationException) {
@@ -129,6 +155,7 @@ class TrashViewModel(
 
   private companion object {
     const val DELETE_FAILED_MESSAGE = "Não foi possível excluir definitivamente este item. Nada foi apagado."
+    const val EMPTY_FAILED_MESSAGE = "Não foi possível esvaziar os itens da lixeira."
     const val OPERATION_FAILED_MESSAGE = "Não foi possível concluir a operação da lixeira."
   }
 

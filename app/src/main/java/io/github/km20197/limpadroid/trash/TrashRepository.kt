@@ -12,6 +12,9 @@ import io.github.km20197.limpadroid.domain.fs.DefaultPathGuard
 import io.github.km20197.limpadroid.domain.fs.Hasher
 import io.github.km20197.limpadroid.domain.fs.MediaScannerHook
 import io.github.km20197.limpadroid.domain.fs.PathGuardResult
+import io.github.km20197.limpadroid.domain.fs.SystemTrashGateway
+import io.github.km20197.limpadroid.domain.fs.SystemTrashPurgeResult
+import io.github.km20197.limpadroid.domain.fs.SystemTrashStats
 import io.github.km20197.limpadroid.domain.fs.TrashStorage
 import io.github.km20197.limpadroid.domain.model.AppClock
 import io.github.km20197.limpadroid.domain.model.BatchTrashMoveSummary
@@ -37,6 +40,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -53,8 +57,13 @@ class TrashRepository(
   private val trashStorage: TrashStorage = TrashStorage(),
   private val clock: AppClock = AppClock.System,
   private val scanCandidateDao: ScanCandidateDao? = null,
+  private val systemTrashGateway: SystemTrashGateway = SystemTrashGateway.NoOp,
+  private val usableSpaceProvider: (Path) -> Long = { path ->
+    runCatching { path.toFile().usableSpace }.getOrDefault(0L)
+  },
 ) {
   private val mutex = Mutex()
+  private val _systemTrashStats = MutableStateFlow(SystemTrashStats())
 
   val inTrashEntries: Flow<List<TrashEntry>> =
     trashEntryDao.observeInTrashEntries().map { list -> list.map { it.toDomain() } }
@@ -62,7 +71,8 @@ class TrashRepository(
   val trashStats: Flow<TrashStats> = combine(
     trashEntryDao.observeInTrashEntries(),
     trashEntryDao.observePurgedEntries(),
-  ) { active, purged ->
+    _systemTrashStats,
+  ) { active, purged, systemTrash ->
     val now = clock.nowMillis()
     val soonThreshold = now + EXPIRING_SOON_MILLIS
     TrashStats(
@@ -71,6 +81,8 @@ class TrashRepository(
       expiringSoonCount = active.count { it.expiresAt <= soonThreshold },
       purgedCount = purged.size,
       freedBytes = purged.sumOf { it.sizeBytes },
+      systemTrashCount = systemTrash.itemCount,
+      systemTrashBytes = systemTrash.totalBytes,
     )
   }
 
@@ -79,6 +91,17 @@ class TrashRepository(
 
   suspend fun getEntry(id: String): TrashEntry? =
     trashEntryDao.getById(id)?.toDomain()
+
+  suspend fun refreshSystemTrashStats() {
+    val stats = try {
+      systemTrashGateway.queryStats()
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (_: Throwable) {
+      return
+    }
+    _systemTrashStats.value = stats
+  }
 
   suspend fun moveToTrash(
     candidate: Candidate,
@@ -174,6 +197,14 @@ class TrashRepository(
     val expiresAt = now + TrashEntry.RETENTION_MILLIS
     val entryId = UUID.randomUUID().toString()
     val trashRoot = trashStorage.resolveTrashRoot(pathGuard.storageRoot)
+    val lowSpaceReason = checkFreeSpaceForCleanup(
+      targetPath = trashRoot,
+      extraRequiredBytes = if (forceCopyFallback) candidate.sizeBytes else 0L,
+    )
+    if (lowSpaceReason != null) {
+      scanLogger.logEvent("TRASH_MOVE_LOW_SPACE", "path=${candidate.path} reason=$lowSpaceReason")
+      return TrashMoveResult.Failed(lowSpaceReason)
+    }
     val entryDir = trashStorage.allocateEntryDir(trashRoot, entryId, now)
     val plannedTrashPath = trashStorage.resolvePayloadPath(entryDir)
 
@@ -395,6 +426,20 @@ class TrashRepository(
         staleOrSkippedCount = 0,
         failedCount = 0,
       )
+    }
+
+    val batchTrashRoot = resolveTrashRootOrNull()
+    if (batchTrashRoot != null) {
+      val batchLowSpace = checkFreeSpaceForCleanup(batchTrashRoot)
+      if (batchLowSpace != null) {
+        scanLogger.logEvent("TRASH_MOVE_LOW_SPACE", "batch=${records.size} reason=$batchLowSpace")
+        return@withLock BatchTrashMoveSummary(
+          movedCandidateIds = emptyList(),
+          movedBytes = 0L,
+          staleOrSkippedCount = 0,
+          failedCount = records.size,
+        )
+      }
     }
 
     val presentRecords = ArrayList<ScanCandidateRecord>(records.size)
@@ -625,7 +670,11 @@ class TrashRepository(
 
     val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
     try {
-      trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entity.trashPath))
+      trashStorage.deleteTrashedPayload(
+        trashRoot = trashRoot,
+        trashPath = Paths.get(entity.trashPath),
+        originalPath = Paths.get(entity.originalPath),
+      )
     } catch (ce: CancellationException) {
       throw ce
     } catch (ipe: java.nio.file.InvalidPathException) {
@@ -675,38 +724,100 @@ class TrashRepository(
         detail = Paths.get(entity.originalPath).fileName?.toString(),
       ),
     )
+    runCatching { mediaScannerHook.scanPaths(listOf(entity.originalPath, entity.trashPath)) }
     scanLogger.logEvent("TRASH_PURGED_MANUAL", "id=$entryId bytes=${entity.sizeBytes}")
     PurgeSummary(purgedCount = 1, freedBytes = entity.sizeBytes)
   }
 
   suspend fun emptyTrash(): PurgeSummary = mutex.withLock {
     val active = trashEntryDao.getByState(TrashEntryState.IN_TRASH.name)
-    if (active.isEmpty()) return@withLock PurgeSummary(0, 0L)
-
-    val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
+    val trashRoot = resolveTrashRootOrNull()
     val now = clock.nowMillis()
     var freed = 0L
     var count = 0
-    for (entry in active) {
-      try {
-        trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entry.trashPath))
-        trashEntryDao.updateLifecycleState(
-          id = entry.id,
-          state = TrashEntryState.PURGED.name,
-          restoredAt = null,
-          restoredPath = null,
-          purgedAt = now,
-          failureReason = null,
-        )
-        freed += entry.sizeBytes
-        count += 1
-      } catch (ce: CancellationException) {
-        throw ce
-      } catch (t: Throwable) {
-        scanLogger.logEvent("TRASH_PURGE_ITEM_FAILED", "id=${entry.id} reason=${t.message}")
+    val purgedPaths = mutableListOf<String>()
+
+    if (trashRoot != null) {
+      for (entry in active) {
+        try {
+          trashStorage.deleteTrashedPayload(
+            trashRoot = trashRoot,
+            trashPath = Paths.get(entry.trashPath),
+            originalPath = Paths.get(entry.originalPath),
+          )
+          trashEntryDao.updateLifecycleState(
+            id = entry.id,
+            state = TrashEntryState.PURGED.name,
+            restoredAt = null,
+            restoredPath = null,
+            purgedAt = now,
+            failureReason = null,
+          )
+          freed += entry.sizeBytes
+          count += 1
+          purgedPaths.add(entry.originalPath)
+          purgedPaths.add(entry.trashPath)
+        } catch (ce: CancellationException) {
+          throw ce
+        } catch (ipe: java.nio.file.InvalidPathException) {
+          val reason = ipe.message ?: "Caminho da lixeira malformado"
+          trashEntryDao.updateLifecycleState(
+            id = entry.id,
+            state = TrashEntryState.FAILED.name,
+            restoredAt = null,
+            restoredPath = null,
+            purgedAt = null,
+            failureReason = reason,
+          )
+          scanLogger.logEvent("TRASH_PURGE_ITEM_FAILED", "id=${entry.id} reason=$reason")
+        } catch (se: SecurityException) {
+          val reason = se.message ?: "Caminho da lixeira inválido ou fora da área gerenciada"
+          trashEntryDao.updateLifecycleState(
+            id = entry.id,
+            state = TrashEntryState.FAILED.name,
+            restoredAt = null,
+            restoredPath = null,
+            purgedAt = null,
+            failureReason = reason,
+          )
+          scanLogger.logEvent("TRASH_PURGE_ITEM_FAILED", "id=${entry.id} reason=$reason")
+        } catch (t: Throwable) {
+          scanLogger.logEvent("TRASH_PURGE_ITEM_FAILED", "id=${entry.id} reason=${t.message}")
+        }
       }
+      pruneEmptyDateDirsUnderTrashRoot(trashRoot)
     }
+
+    if (purgedPaths.isNotEmpty()) {
+      runCatching { mediaScannerHook.scanPaths(purgedPaths) }
+    }
+
+    val systemResult = try {
+      systemTrashGateway.emptySystemTrash()
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (t: Throwable) {
+      scanLogger.logEvent("SYSTEM_TRASH_EMPTY_FAILED", "reason=${t.message}")
+      SystemTrashPurgeResult()
+    }
+    _systemTrashStats.value = try {
+      systemTrashGateway.queryStats()
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (_: Throwable) {
+      SystemTrashStats()
+    }
+
+    val internalCount = count
+    freed += systemResult.freedBytes
+    count += systemResult.purgedCount
+
     if (count > 0) {
+      val detail = if (systemResult.purgedCount > 0) {
+        "Interna: $internalCount · Sistema Android: ${systemResult.purgedCount}"
+      } else {
+        null
+      }
       operationHistoryDao.insert(
         OperationHistoryEntity(
           operationType = OperationType.EMPTY_TRASH.name,
@@ -714,10 +825,13 @@ class TrashRepository(
           itemCount = count,
           totalBytes = freed,
           timestamp = now,
-          detail = null,
+          detail = detail,
         ),
       )
-      scanLogger.logEvent("TRASH_EMPTIED", "count=$count bytes=$freed")
+      scanLogger.logEvent(
+        "TRASH_EMPTIED",
+        "internal=$internalCount system=${systemResult.purgedCount} bytes=$freed",
+      )
     }
     PurgeSummary(purgedCount = count, freedBytes = freed)
   }
@@ -730,9 +844,14 @@ class TrashRepository(
     val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
     var freed = 0L
     var count = 0
+    val purgedPaths = mutableListOf<String>()
     for (entry in expired) {
       try {
-        trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entry.trashPath))
+        trashStorage.deleteTrashedPayload(
+          trashRoot = trashRoot,
+          trashPath = Paths.get(entry.trashPath),
+          originalPath = Paths.get(entry.originalPath),
+        )
         trashEntryDao.updateLifecycleState(
           id = entry.id,
           state = TrashEntryState.PURGED.name,
@@ -743,11 +862,16 @@ class TrashRepository(
         )
         freed += entry.sizeBytes
         count += 1
+        purgedPaths.add(entry.originalPath)
+        purgedPaths.add(entry.trashPath)
       } catch (ce: CancellationException) {
         throw ce
       } catch (t: Throwable) {
         scanLogger.logEvent("TRASH_EXPIRED_PURGE_REJECTED", "id=${entry.id} reason=${t.message}")
       }
+    }
+    if (purgedPaths.isNotEmpty()) {
+      runCatching { mediaScannerHook.scanPaths(purgedPaths) }
     }
     if (count > 0) {
       operationHistoryDao.insert(
@@ -892,6 +1016,58 @@ class TrashRepository(
         }
       }
     }
+
+    _systemTrashStats.value = try {
+      systemTrashGateway.queryStats()
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (_: Throwable) {
+      SystemTrashStats()
+    }
+  }
+
+  private fun checkFreeSpaceForCleanup(
+    targetPath: Path,
+    extraRequiredBytes: Long = 0L,
+  ): String? {
+    val probePath = existingAncestorOrSelf(targetPath)
+    val usableBytes = runCatching { usableSpaceProvider(probePath) }.getOrDefault(0L)
+    val requiredBytes = if (extraRequiredBytes > Long.MAX_VALUE - CLEANUP_SAFETY_MARGIN_BYTES) {
+      Long.MAX_VALUE
+    } else {
+      CLEANUP_SAFETY_MARGIN_BYTES + extraRequiredBytes.coerceAtLeast(0L)
+    }
+    if (usableBytes < requiredBytes) {
+      return "Espaço livre insuficiente para mover com segurança (${usableBytes} B disponíveis; mínimo exigido de ${requiredBytes} B)."
+    }
+    return null
+  }
+
+  private fun existingAncestorOrSelf(path: Path): Path {
+    var current: Path? = path.toAbsolutePath().normalize()
+    while (current != null && !Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+      current = current.parent
+    }
+    return current ?: path
+  }
+
+  private fun pruneEmptyDateDirsUnderTrashRoot(trashRoot: Path) {
+    if (!Files.isDirectory(trashRoot, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(trashRoot)) return
+    runCatching {
+      Files.newDirectoryStream(trashRoot).use { stream ->
+        for (child in stream) {
+          if (Files.isSymbolicLink(child) || !Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
+            continue
+          }
+          val isEmpty = runCatching {
+            Files.newDirectoryStream(child).use { sub -> !sub.iterator().hasNext() }
+          }.getOrDefault(false)
+          if (isEmpty) {
+            runCatching { Files.deleteIfExists(child) }
+          }
+        }
+      }
+    }
   }
 
   private fun resolveTrashRootOrNull(): Path? {
@@ -934,5 +1110,6 @@ class TrashRepository(
 
   companion object {
     private const val EXPIRING_SOON_MILLIS = 3L * TrashEntry.MILLIS_PER_DAY
+    const val CLEANUP_SAFETY_MARGIN_BYTES = 100L * 1024L * 1024L
   }
 }

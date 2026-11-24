@@ -349,15 +349,15 @@ class TrashStorageTest {
     assertTrue(threwOnError)
     assertTrue(Files.exists(source1, LinkOption.NOFOLLOW_LINKS))
 
-    // 2) Espaço exato igual ao tamanho do arquivo sem margem de segurança também deve ser recusado
-    val exactSpaceStorage = TrashStorage(usableSpaceProvider = { fileSize })
+    // 2) Espaço inferior à margem mínima de 100 MiB deve ser recusado mesmo que maior que o arquivo
+    val belowMarginStorage = TrashStorage(usableSpaceProvider = { TrashStorage.COPY_SAFETY_MARGIN_MIN_BYTES - 1L })
     val source2 = Files.writeString(dlDir.resolve("sem_margem.bin"), content)
-    val trashRoot2 = exactSpaceStorage.resolveTrashRoot(storageRoot)
-    val entryDir2 = exactSpaceStorage.allocateEntryDir(trashRoot2, "entry-no-margin", 1_700_000_000_000L)
+    val trashRoot2 = belowMarginStorage.resolveTrashRoot(storageRoot)
+    val entryDir2 = belowMarginStorage.allocateEntryDir(trashRoot2, "entry-no-margin", 1_700_000_000_000L)
 
     var threwWithoutMargin = false
     try {
-      exactSpaceStorage.moveToTrash(
+      belowMarginStorage.moveToTrash(
         source = source2,
         trashRoot = trashRoot2,
         entryDir = entryDir2,
@@ -382,5 +382,94 @@ class TrashStorageTest {
     }
     assertTrue(threwWithoutMargin)
     assertTrue(Files.exists(source2, LinkOption.NOFOLLOW_LINKS))
+
+    // 3) Espaço igual a tamanho + margem mínima de 100 MiB permite a movimentação
+    val exactMarginStorage = TrashStorage(
+      usableSpaceProvider = { fileSize + TrashStorage.COPY_SAFETY_MARGIN_MIN_BYTES },
+    )
+    val entryDir3 = exactMarginStorage.allocateEntryDir(trashRoot2, "entry-exact-margin", 1_700_000_000_000L)
+    val movedWithMargin = exactMarginStorage.moveToTrash(
+      source = source2,
+      trashRoot = trashRoot2,
+      entryDir = entryDir3,
+      forceCopyFallback = true,
+      metadataBuilder = { dest, size, sha, mtime ->
+        TrashMetadataPayload(
+          id = "entry-exact-margin",
+          originalPath = source2.toString(),
+          trashPath = dest.toString(),
+          sizeBytes = size,
+          sha256 = sha,
+          originalMtime = mtime,
+          category = "SUPERFLUOUS",
+          ruleId = "TEST",
+          deletedAt = 1_700_000_000_000L,
+          expiresAt = 1_702_592_000_000L,
+        )
+      },
+    )
+    assertFalse(Files.exists(source2, LinkOption.NOFOLLOW_LINKS))
+    assertTrue(Files.exists(movedWithMargin.trashPath, LinkOption.NOFOLLOW_LINKS))
+  }
+
+  @Test
+  fun `deleteMediaStoreUriIfPresent checks URI and deletes via gateway without touching existing originalPath`() = runTest {
+    val associatedUris = mutableMapOf<String, String>()
+    val deletedCalls = mutableListOf<String>()
+    val gateway = object : MediaStoreDeleteGateway {
+      override suspend fun findAssociatedUri(filePath: Path): String? =
+        associatedUris[filePath.toAbsolutePath().normalize().toString()]
+
+      override suspend fun deleteByAssociatedUri(filePath: Path): Boolean {
+        val key = filePath.toAbsolutePath().normalize().toString()
+        deletedCalls.add(key)
+        return associatedUris.remove(key) != null
+      }
+    }
+    val msStorage = TrashStorage(
+      usableSpaceProvider = { 512L * 1024L * 1024L },
+      mediaStoreDeleteGateway = gateway,
+    )
+
+    val dcim = Files.createDirectories(storageRoot.resolve("DCIM"))
+    val originalMovedPath = dcim.resolve("foto_removida.jpg")
+    val activeNewOriginalPath = Files.writeString(dcim.resolve("foto_nova.jpg"), "novo-arquivo")
+
+    val trashRoot = msStorage.resolveTrashRoot(storageRoot)
+    msStorage.ensureTrashRootInitialized(trashRoot)
+
+    val entryDir1 = msStorage.allocateEntryDir(trashRoot, "entry-ms-1", 1_700_000_000_000L)
+    val payload1 = msStorage.resolvePayloadPath(entryDir1)
+    Files.createDirectories(entryDir1)
+    Files.writeString(payload1, "img-bytes")
+
+    val entryDir2 = msStorage.allocateEntryDir(trashRoot, "entry-ms-2", 1_700_000_000_000L)
+    val payload2 = msStorage.resolvePayloadPath(entryDir2)
+    Files.createDirectories(entryDir2)
+    Files.writeString(payload2, "img-bytes-2")
+
+    associatedUris[payload1.toString()] = "content://media/external/images/media/101"
+    associatedUris[originalMovedPath.toString()] = "content://media/external/images/media/102"
+    associatedUris[activeNewOriginalPath.toString()] = "content://media/external/images/media/103"
+
+    // 1) deleteTrashedPayload apaga URI do payload e URI residual de originalPath ausente
+    msStorage.deleteTrashedPayload(
+      trashRoot = trashRoot,
+      trashPath = payload1,
+      originalPath = originalMovedPath,
+    )
+    assertTrue(deletedCalls.contains(payload1.toString()))
+    assertTrue(deletedCalls.contains(originalMovedPath.toString()))
+    assertFalse(Files.exists(entryDir1, LinkOption.NOFOLLOW_LINKS))
+
+    // 2) Se originalPath existir novamente em disco, nao pode invocar exclusao no MediaStore para ele
+    deletedCalls.clear()
+    msStorage.deleteMediaStoreUriIfPresent(
+      filePath = payload2,
+      originalPath = activeNewOriginalPath,
+    )
+    assertFalse(deletedCalls.contains(activeNewOriginalPath.toString()))
+    assertTrue(associatedUris.containsKey(activeNewOriginalPath.toString()))
+    assertTrue(Files.exists(activeNewOriginalPath, LinkOption.NOFOLLOW_LINKS))
   }
 }

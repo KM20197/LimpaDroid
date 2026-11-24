@@ -411,6 +411,18 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.testTag("home_trash_metrics"),
               )
+              if (uiState.trashStats.systemTrashCount > 0) {
+                Text(
+                  text = stringResource(
+                    R.string.home_trash_system_format,
+                    ByteFormatter.format(uiState.trashStats.systemTrashBytes),
+                    uiState.trashStats.systemTrashCount,
+                  ),
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.testTag("home_trash_system_metrics"),
+                )
+              }
               Text(
                 text = stringResource(
                   R.string.home_trash_freed_format,

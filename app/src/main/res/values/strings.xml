@@ -124,18 +124,21 @@
 
     <!-- Lixeira e Histórico (Fase 2) -->
     <string name="home_trash_metrics_format">Em lixeira: %1$s (%2$d) · A expirar: %3$d</string>
+    <string name="home_trash_system_format">Lixeira do Android: %1$s (%2$d item(ns))</string>
     <string name="home_trash_freed_format">Espaço efetivamente liberado: %1$s</string>
     <string name="home_open_trash">Abrir lixeira</string>
     <string name="home_open_history">Histórico</string>
 
-    <string name="trash_screen_title">Lixeira interna</string>
+    <string name="trash_screen_title">Lixeira</string>
     <string name="trash_empty_all_button">Esvaziar lixeira</string>
     <string name="trash_in_trash_label">Em lixeira</string>
     <string name="trash_freed_label">Espaço efetivamente liberado</string>
+    <string name="trash_system_summary_format">Lixeira do Android: %1$s (%2$d item(ns))</string>
     <string name="trash_expiring_soon_format">%1$d item(ns) expira(m) em até 3 dias</string>
-    <string name="trash_accounting_notice">Mover itens para a lixeira não libera espaço imediatamente; a liberação ocorre somente no expurgo após 30 dias ou na exclusão definitiva. A lixeira reside em Documents/LimpaDroid/.lixeira.</string>
+    <string name="trash_accounting_notice">Mover itens para a lixeira não libera espaço imediatamente; a liberação ocorre somente no expurgo após 30 dias ou na exclusão definitiva. A lixeira interna reside em Documents/LimpaDroid/.lixeira e o esvaziamento também limpa a lixeira do Android.</string>
     <string name="trash_empty_state_title">Lixeira vazia</string>
     <string name="trash_empty_state_desc">Nenhum arquivo aguarda expiração na lixeira interna.</string>
+    <string name="trash_system_only_pending_desc">A lixeira interna está vazia, mas há %1$d item(ns) (%2$s) na lixeira do Android aguardando exclusão definitiva.</string>
     <string name="trash_deleted_at_format">Removido em: %1$s</string>
     <string name="trash_remaining_days_format">Dias restantes: %1$d</string>
     <string name="trash_restore_button">Restaurar</string>
@@ -149,6 +152,8 @@
     <string name="trash_confirm_delete_action">Excluir definitivamente</string>
     <string name="trash_confirm_empty_title">Esvaziar toda a lixeira</string>
     <string name="trash_confirm_empty_body">Todos os %1$d item(ns) (%2$s) serão removidos de forma irreversível do dispositivo.</string>
+    <string name="trash_confirm_empty_system_only_body">Todos os %1$d item(ns) (%2$s) da lixeira do Android serão removidos de forma irreversível do dispositivo.</string>
+    <string name="trash_confirm_empty_both_body">Todos os %1$d item(ns) (%2$s) da lixeira interna e %3$d item(ns) (%4$s) da lixeira do Android serão removidos de forma irreversível do dispositivo.</string>
     <string name="trash_confirm_empty_action">Esvaziar lixeira</string>
     <string name="trash_restored_feedback">Item restaurado em: %1$s</string>
     <string name="trash_purged_feedback">Exclusão definitiva concluída (%1$s liberados).</string>

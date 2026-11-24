@@ -4,8 +4,10 @@ import android.app.Application
 import android.content.Context
 import io.github.km20197.limpadroid.data.db.LimpaDroidDatabase
 import io.github.km20197.limpadroid.data.fs.AndroidMediaScannerHook
+import io.github.km20197.limpadroid.data.fs.AndroidMediaStoreDeleteGateway
 import io.github.km20197.limpadroid.data.fs.AndroidMediaStoreGateway
 import io.github.km20197.limpadroid.data.fs.AndroidStorageVolumeResolver
+import io.github.km20197.limpadroid.data.fs.AndroidSystemTrashGateway
 import io.github.km20197.limpadroid.data.fs.DefaultStorageDiagnosticRepository
 import io.github.km20197.limpadroid.data.fs.StorageDiagnosticRepository
 import io.github.km20197.limpadroid.data.fs.StorageVolumeResolver
@@ -21,7 +23,10 @@ import io.github.km20197.limpadroid.data.scan.ScanRepository
 import io.github.km20197.limpadroid.domain.diagnostic.DirectoryInspector
 import io.github.km20197.limpadroid.domain.fs.FileWalker
 import io.github.km20197.limpadroid.domain.fs.MediaScannerHook
+import io.github.km20197.limpadroid.domain.fs.MediaStoreDeleteGateway
 import io.github.km20197.limpadroid.domain.fs.MediaStoreGateway
+import io.github.km20197.limpadroid.domain.fs.SystemTrashGateway
+import io.github.km20197.limpadroid.domain.fs.TrashStorage
 import io.github.km20197.limpadroid.domain.pkg.InstalledAppsRepository
 import io.github.km20197.limpadroid.domain.scan.DuplicateScanEngine
 import io.github.km20197.limpadroid.domain.scan.HashCacheRepository
@@ -180,6 +185,29 @@ class DefaultAppContainer(
     )
   }
 
+  private val mediaStoreDeleteGateway: MediaStoreDeleteGateway by lazy {
+    AndroidMediaStoreDeleteGateway(
+      context = context,
+      permissionChecker = permissionChecker,
+      scanLogger = scanLogger,
+    )
+  }
+
+  private val trashStorage: TrashStorage by lazy {
+    TrashStorage(mediaStoreDeleteGateway = mediaStoreDeleteGateway)
+  }
+
+  private val systemTrashGateway: SystemTrashGateway by lazy {
+    AndroidSystemTrashGateway(
+      context = context,
+      permissionChecker = permissionChecker,
+      storageVolumeResolver = volumeResolver,
+      mediaScannerHook = mediaScannerHook,
+      scanLogger = scanLogger,
+      applicationId = BuildConfig.APPLICATION_ID,
+    )
+  }
+
   override val trashRepository: TrashRepository by lazy {
     TrashRepository(
       trashEntryDao = database.trashEntryDao(),
@@ -188,7 +216,9 @@ class DefaultAppContainer(
       mediaScannerHook = mediaScannerHook,
       scanLogger = scanLogger,
       applicationId = BuildConfig.APPLICATION_ID,
+      trashStorage = trashStorage,
       scanCandidateDao = database.scanCandidateDao(),
+      systemTrashGateway = systemTrashGateway,
     )
   }
 

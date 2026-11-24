@@ -66,9 +66,11 @@ class HomeViewModelTest {
       hasNotif = { notifications },
     )
 
-    val vm = HomeViewModel(checker, FakeScanController(), FakeTrashController())
+    val trashController = FakeTrashController()
+    val vm = HomeViewModel(checker, FakeScanController(), trashController)
     assertFalse(vm.uiState.value.hasAllFilesAccess)
     assertFalse(vm.uiState.value.hasNotificationPermission)
+    assertEquals(0, trashController.refreshSystemTrashCalls)
 
     storage = true
     notifications = true
@@ -76,6 +78,7 @@ class HomeViewModelTest {
 
     assertTrue(vm.uiState.value.hasAllFilesAccess)
     assertTrue(vm.uiState.value.hasNotificationPermission)
+    assertEquals(1, trashController.refreshSystemTrashCalls)
   }
 
   @Test
@@ -290,10 +293,15 @@ class HomeViewModelTest {
     val batchCalls = mutableListOf<Pair<String?, List<ScanCandidateRecord>>>()
     var lastExcludedPaths: Set<Path> = emptySet()
 
+    var refreshSystemTrashCalls = 0
+
     override val inTrashEntries: Flow<List<TrashEntry>> = flowOf(emptyList())
     override val trashStats: Flow<TrashStats> = statsFlow
     override val recentHistory: Flow<List<OperationHistoryRecord>> = flowOf(emptyList())
     override suspend fun reconcileAndPurgeOnStartup() = Unit
+    override suspend fun refreshSystemTrashStats() {
+      refreshSystemTrashCalls += 1
+    }
     override suspend fun restoreEntry(entryId: String): TrashRestoreResult =
       TrashRestoreResult.MissingPayload("empty")
     override suspend fun deletePermanently(entryId: String): PurgeSummary = PurgeSummary(0, 0L)

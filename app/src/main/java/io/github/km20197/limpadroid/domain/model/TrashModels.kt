@@ -55,6 +55,8 @@ data class TrashStats(
   val expiringSoonCount: Int = 0,
   val purgedCount: Int = 0,
   val freedBytes: Long = 0L,
+  val systemTrashCount: Int = 0,
+  val systemTrashBytes: Long = 0L,
 )
 
 data class OperationHistoryRecord(

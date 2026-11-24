@@ -49,6 +49,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.km20197.limpadroid.R
 import io.github.km20197.limpadroid.domain.format.ByteFormatter
@@ -90,15 +92,23 @@ fun TrashScreen(
     }
   }
 
+  LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+    viewModel.refreshSystemTrash()
+  }
+
   uiState.pendingConfirmation?.let { confirmation ->
     TrashConfirmationDialog(
       confirmation = confirmation,
       totalInTrashCount = uiState.stats.inTrashCount,
       totalInTrashBytes = uiState.stats.inTrashBytes,
+      systemTrashCount = uiState.stats.systemTrashCount,
+      systemTrashBytes = uiState.stats.systemTrashBytes,
       onConfirm = viewModel::confirmPendingAction,
       onDismiss = viewModel::dismissConfirmation,
     )
   }
+
+  val hasAnyTrash = uiState.entries.isNotEmpty() || uiState.stats.systemTrashCount > 0
 
   Scaffold(
     modifier = modifier.fillMaxSize(),
@@ -121,7 +131,7 @@ fun TrashScreen(
           }
         },
         actions = {
-          if (uiState.entries.isNotEmpty()) {
+          if (hasAnyTrash) {
             TextButton(
               onClick = viewModel::requestEmptyTrash,
               enabled = !uiState.isBusy,
@@ -190,6 +200,18 @@ fun TrashScreen(
                   )
                 }
               }
+              if (uiState.stats.systemTrashCount > 0) {
+                Text(
+                  text = stringResource(
+                    R.string.trash_system_summary_format,
+                    ByteFormatter.format(uiState.stats.systemTrashBytes),
+                    uiState.stats.systemTrashCount,
+                  ),
+                  style = MaterialTheme.typography.labelLarge,
+                  color = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.testTag("trash_system_summary"),
+                )
+              }
               if (uiState.stats.expiringSoonCount > 0) {
                 Text(
                   text = stringResource(
@@ -241,11 +263,32 @@ fun TrashScreen(
                   text = stringResource(R.string.trash_empty_state_title),
                   style = MaterialTheme.typography.titleMedium,
                 )
-                Text(
-                  text = stringResource(R.string.trash_empty_state_desc),
-                  style = MaterialTheme.typography.bodyMedium,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (uiState.stats.systemTrashCount > 0) {
+                  Text(
+                    text = stringResource(
+                      R.string.trash_system_only_pending_desc,
+                      uiState.stats.systemTrashCount,
+                      ByteFormatter.format(uiState.stats.systemTrashBytes),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                  FilledTonalButton(
+                    onClick = viewModel::requestEmptyTrash,
+                    enabled = !uiState.isBusy,
+                    modifier = Modifier
+                      .heightIn(min = 48.dp)
+                      .testTag("trash_empty_system_button"),
+                  ) {
+                    Text(stringResource(R.string.trash_empty_all_button))
+                  }
+                } else {
+                  Text(
+                    text = stringResource(R.string.trash_empty_state_desc),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
               }
             }
           }
@@ -381,6 +424,8 @@ private fun TrashConfirmationDialog(
   confirmation: TrashConfirmation,
   totalInTrashCount: Int,
   totalInTrashBytes: Long,
+  systemTrashCount: Int,
+  systemTrashBytes: Long,
   onConfirm: () -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -403,15 +448,32 @@ private fun TrashConfirmationDialog(
         stringResource(R.string.trash_confirm_delete_action),
       )
     }
-    TrashConfirmation.EmptyTrash -> Triple(
-      stringResource(R.string.trash_confirm_empty_title),
-      stringResource(
-        R.string.trash_confirm_empty_body,
-        totalInTrashCount,
-        ByteFormatter.format(totalInTrashBytes),
-      ),
-      stringResource(R.string.trash_confirm_empty_action),
-    )
+    TrashConfirmation.EmptyTrash -> {
+      val bodyText = when {
+        totalInTrashCount > 0 && systemTrashCount > 0 -> stringResource(
+          R.string.trash_confirm_empty_both_body,
+          totalInTrashCount,
+          ByteFormatter.format(totalInTrashBytes),
+          systemTrashCount,
+          ByteFormatter.format(systemTrashBytes),
+        )
+        totalInTrashCount == 0 && systemTrashCount > 0 -> stringResource(
+          R.string.trash_confirm_empty_system_only_body,
+          systemTrashCount,
+          ByteFormatter.format(systemTrashBytes),
+        )
+        else -> stringResource(
+          R.string.trash_confirm_empty_body,
+          totalInTrashCount,
+          ByteFormatter.format(totalInTrashBytes),
+        )
+      }
+      Triple(
+        stringResource(R.string.trash_confirm_empty_title),
+        bodyText,
+        stringResource(R.string.trash_confirm_empty_action),
+      )
+    }
   }
 
   AlertDialog(

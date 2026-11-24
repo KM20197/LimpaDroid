@@ -51,6 +51,7 @@ interface TrashController {
     get() = flowOf(false)
 
   suspend fun reconcileAndPurgeOnStartup()
+  suspend fun refreshSystemTrashStats() {}
   suspend fun restoreEntry(entryId: String): TrashRestoreResult
   suspend fun deletePermanently(entryId: String): PurgeSummary
   suspend fun emptyTrash(): PurgeSummary
@@ -129,6 +130,10 @@ class WorkManagerTrashController(
     schedulePeriodicPurge()
     trashRepository.reconcilePendingAndRebuildIndex()
     trashRepository.purgeExpired()
+  }
+
+  override suspend fun refreshSystemTrashStats() {
+    trashRepository.refreshSystemTrashStats()
   }
 
   override suspend fun restoreEntry(entryId: String): TrashRestoreResult =

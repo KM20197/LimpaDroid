@@ -142,6 +142,52 @@ class TrashViewModelTest {
 
     assertEquals(1, viewModel.uiState.value.entries.size)
     assertFalse(viewModel.uiState.value.isBusy)
+    assertTrue(fake.refreshSystemTrashCalls >= 1)
+  }
+
+  @Test
+  fun `empty trash works when only Android system trash has items`() = runTest {
+    val fake = FakeTrashController(initialEntries = emptyList()).apply {
+      statsFlow.value = TrashStats(
+        inTrashCount = 0,
+        inTrashBytes = 0L,
+        systemTrashCount = 3,
+        systemTrashBytes = 6144L,
+      )
+      emptySummaryOverride = PurgeSummary(purgedCount = 3, freedBytes = 6144L)
+    }
+    val viewModel = TrashViewModel(fake)
+    advanceUntilIdle()
+
+    viewModel.requestEmptyTrash()
+    assertEquals(TrashConfirmation.EmptyTrash, viewModel.uiState.value.pendingConfirmation)
+
+    viewModel.confirmPendingAction()
+    advanceUntilIdle()
+
+    assertTrue(fake.emptied)
+    assertFalse(viewModel.uiState.value.isBusy)
+    assertEquals(
+      TrashFeedback.Emptied(count = 3, formattedBytes = "6,0 KiB"),
+      viewModel.uiState.value.feedback,
+    )
+  }
+
+  @Test
+  fun `empty trash returning zero purged when items existed emits error feedback`() = runTest {
+    val fake = FakeTrashController(initialEntries = emptyList()).apply {
+      statsFlow.value = TrashStats(systemTrashCount = 2, systemTrashBytes = 2048L)
+      emptySummaryOverride = PurgeSummary(purgedCount = 0, freedBytes = 0L)
+    }
+    val viewModel = TrashViewModel(fake)
+    advanceUntilIdle()
+
+    viewModel.requestEmptyTrash()
+    viewModel.confirmPendingAction()
+    advanceUntilIdle()
+
+    assertFalse(viewModel.uiState.value.isBusy)
+    assertTrue(viewModel.uiState.value.feedback is TrashFeedback.Error)
   }
 
   private fun sampleEntry(id: String, path: String) = TrashEntry(
@@ -172,8 +218,10 @@ class TrashViewModelTest {
 
     var startupCalled = false
     var startupFailure: Throwable? = null
+    var refreshSystemTrashCalls = 0
     var deleteFailure: Throwable? = null
     var deleteSummaryOverride: PurgeSummary? = null
+    var emptySummaryOverride: PurgeSummary? = null
     val restoredIds = mutableListOf<String>()
     val purgedIds = mutableListOf<String>()
     var emptied = false
@@ -185,6 +233,10 @@ class TrashViewModelTest {
     override suspend fun reconcileAndPurgeOnStartup() {
       startupCalled = true
       startupFailure?.let { throw it }
+    }
+
+    override suspend fun refreshSystemTrashStats() {
+      refreshSystemTrashCalls += 1
     }
 
     override suspend fun restoreEntry(entryId: String): TrashRestoreResult {
@@ -204,6 +256,7 @@ class TrashViewModelTest {
 
     override suspend fun emptyTrash(): PurgeSummary {
       emptied = true
+      emptySummaryOverride?.let { return it }
       val count = entriesFlow.value.size
       entriesFlow.value = emptyList()
       return PurgeSummary(purgedCount = count, freedBytes = count * 1024L)
