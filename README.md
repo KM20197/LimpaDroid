@@ -33,54 +33,6 @@ Copyright © 2026 **Ricardo Coutinho Mello**. Distribuído sob a licença [Creat
 3. **Revisão por categoria e Lixeira:** toque em qualquer linha da seção **Categorias identificadas** para inspecionar detalhes, ajustar seleções manuais (`LOW`/`MEDIUM` e primeira execução do WhatsApp vêm desmarcados por segurança) ou trocar a cópia preservada em grupos de duplicados.
 4. **Configurações, Histórico e Diagnóstico:** ajuste regras, exceções protegidas, pastas de prioridade de duplicados e filtros de idade/mídia do WhatsApp pelo ícone de engrenagem; acompanhe auditoria em **Histórico** e abra o **Modo Diagnóstico** mantendo pressionada a versão no rodapé da tela **Início**.
 
-## Compilação local
-
-Requisitos: JDK 21 em tempo de compilação/testes (exigido pelo Robolectric 4.18 na API 37, gerando bytecode alvo Java 17), Android SDK Platform 37 (`platforms;android-37.0` via canal Canary) e Gradle Wrapper (`9.3.1`). Caso `debug.keystore` não exista na raiz do repositório clonado, gere a chave de depuração localmente com `keytool` antes da compilação:
-
-```bash
-keytool -genkeypair -v \
-  -keystore debug.keystore \
-  -storepass android \
-  -alias androiddebugkey \
-  -keypass android \
-  -dname "CN=Android Debug,O=Android,C=US" \
-  -keyalg RSA \
-  -keysize 2048 \
-  -validity 10000
-
-./gradlew lint testDebugUnitTest assembleDebug
-```
-
-## Assinatura de lançamento, GitHub Secrets e publicação (`v1.0.0`)
-
-1. **Gerar keystore de lançamento (uma única vez, fora do Git):**
-   ```bash
-   keytool -genkeypair -v \
-     -keystore limpadroid-release.jks \
-     -alias upload \
-     -keyalg RSA \
-     -keysize 2048 \
-     -validity 10000
-   ```
-   Guarde `limpadroid-release.jks` e as senhas em cópia de segurança segura (cofre de senhas). Nunca versionar arquivos `.jks` ou `.keystore`. Sem a mesma chave, não será possível atualizar o APK diretamente sem desinstalar o aplicativo (o que apagaria o índice local da lixeira).
-
-2. **Codificar em Base64 (linha única) e cadastrar no GitHub:**
-   ```bash
-   base64 -w0 limpadroid-release.jks
-   ```
-   Em **Settings -> Secrets and variables -> Actions** no repositório do GitHub, configure:
-   - `RELEASE_KEYSTORE_BASE64`: saída Base64 em linha única do arquivo `.jks`.
-   - `KEY_ALIAS`: alias da chave (recomendado `upload`; caso use outro alias, `release.yml` normaliza a cópia temporária durante o build).
-   - `STORE_PASSWORD`: senha do keystore.
-   - `KEY_PASSWORD`: senha da chave privada.
-
-3. **Publicar versão:**
-   ```bash
-   git tag -a v1.0.0 -m "chore(release): v1.0.0"
-   git push origin v1.0.0
-   ```
-   O workflow `.github/workflows/release.yml` executa `lint`, `testDebugUnitTest`, `assembleRelease`, valida a assinatura com `apksigner verify`, calcula `sha256sum` e publica `limpadroid-1.0.0-release.apk` e `.sha256` em **GitHub Releases**.
-
 ## Instalação e atualização no dispositivo
 
 1. Baixe `limpadroid-<versão>-release.apk` na aba **Releases** do repositório GitHub.
