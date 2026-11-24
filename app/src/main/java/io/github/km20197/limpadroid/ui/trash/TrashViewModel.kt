@@ -8,6 +8,7 @@ import io.github.km20197.limpadroid.domain.model.TrashEntry
 import io.github.km20197.limpadroid.domain.model.TrashRestoreResult
 import io.github.km20197.limpadroid.domain.model.TrashStats
 import io.github.km20197.limpadroid.trash.TrashController
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,7 +45,14 @@ class TrashViewModel(
 
   init {
     viewModelScope.launch {
-      trashController.reconcileAndPurgeOnStartup()
+      // A manutenção inicial é auxiliar: sua falha não pode derrubar a tela (a lista segue observável).
+      try {
+        trashController.reconcileAndPurgeOnStartup()
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (_: Throwable) {
+        // O PurgeWorker periódico repete a manutenção.
+      }
     }
     viewModelScope.launch {
       trashController.inTrashEntries.collect { list ->
@@ -84,29 +92,44 @@ class TrashViewModel(
     _uiState.update { it.copy(pendingConfirmation = null, isBusy = true) }
 
     viewModelScope.launch {
-      val feedback = when (action) {
-        is TrashConfirmation.Restore -> {
-          when (val result = trashController.restoreEntry(action.entry.id)) {
-            is TrashRestoreResult.Restored -> TrashFeedback.Restored(result.restoredPath)
-            is TrashRestoreResult.MissingPayload -> TrashFeedback.Error(result.reason)
-            is TrashRestoreResult.Rejected -> TrashFeedback.Error(result.reason)
-            is TrashRestoreResult.Failed -> TrashFeedback.Error(result.reason)
+      val feedback = try {
+        when (action) {
+          is TrashConfirmation.Restore -> {
+            when (val result = trashController.restoreEntry(action.entry.id)) {
+              is TrashRestoreResult.Restored -> TrashFeedback.Restored(result.restoredPath)
+              is TrashRestoreResult.MissingPayload -> TrashFeedback.Error(result.reason)
+              is TrashRestoreResult.Rejected -> TrashFeedback.Error(result.reason)
+              is TrashRestoreResult.Failed -> TrashFeedback.Error(result.reason)
+            }
+          }
+          is TrashConfirmation.DeleteForever -> {
+            val summary = trashController.deletePermanently(action.entry.id)
+            if (summary.purgedCount > 0) {
+              TrashFeedback.PurgedSingle(ByteFormatter.format(summary.freedBytes))
+            } else {
+              TrashFeedback.Error(DELETE_FAILED_MESSAGE)
+            }
+          }
+          TrashConfirmation.EmptyTrash -> {
+            val summary = trashController.emptyTrash()
+            TrashFeedback.Emptied(
+              count = summary.purgedCount,
+              formattedBytes = ByteFormatter.format(summary.freedBytes),
+            )
           }
         }
-        is TrashConfirmation.DeleteForever -> {
-          val summary = trashController.deletePermanently(action.entry.id)
-          TrashFeedback.PurgedSingle(ByteFormatter.format(summary.freedBytes))
-        }
-        TrashConfirmation.EmptyTrash -> {
-          val summary = trashController.emptyTrash()
-          TrashFeedback.Emptied(
-            count = summary.purgedCount,
-            formattedBytes = ByteFormatter.format(summary.freedBytes),
-          )
-        }
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (t: Throwable) {
+        TrashFeedback.Error(t.message ?: OPERATION_FAILED_MESSAGE)
       }
       _uiState.update { it.copy(isBusy = false, feedback = feedback) }
     }
+  }
+
+  private companion object {
+    const val DELETE_FAILED_MESSAGE = "Não foi possível excluir definitivamente este item. Nada foi apagado."
+    const val OPERATION_FAILED_MESSAGE = "Não foi possível concluir a operação da lixeira."
   }
 
   class Factory(

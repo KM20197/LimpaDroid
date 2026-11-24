@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -95,6 +96,54 @@ class TrashViewModelTest {
     assertTrue(fake.emptied)
   }
 
+  @Test
+  fun `delete forever failure is reported as error feedback and clears the busy flag`() = runTest {
+    val entry = sampleEntry("entry-fail", "/storage/emulated/0/Download/fail.tmp")
+    val fake = FakeTrashController(initialEntries = listOf(entry)).apply {
+      deleteFailure = IllegalStateException("Falha de E/S simulada")
+    }
+    val viewModel = TrashViewModel(fake)
+    advanceUntilIdle()
+
+    viewModel.requestDeleteForever(entry)
+    viewModel.confirmPendingAction()
+    advanceUntilIdle()
+
+    assertFalse(viewModel.uiState.value.isBusy)
+    assertEquals(TrashFeedback.Error("Falha de E/S simulada"), viewModel.uiState.value.feedback)
+    assertEquals(1, viewModel.uiState.value.entries.size)
+  }
+
+  @Test
+  fun `delete forever with nothing purged is reported as an error instead of success`() = runTest {
+    val entry = sampleEntry("entry-zero", "/storage/emulated/0/Download/zero.tmp")
+    val fake = FakeTrashController(initialEntries = listOf(entry)).apply {
+      deleteSummaryOverride = PurgeSummary(purgedCount = 0, freedBytes = 0L)
+    }
+    val viewModel = TrashViewModel(fake)
+    advanceUntilIdle()
+
+    viewModel.requestDeleteForever(entry)
+    viewModel.confirmPendingAction()
+    advanceUntilIdle()
+
+    assertFalse(viewModel.uiState.value.isBusy)
+    assertTrue(viewModel.uiState.value.feedback is TrashFeedback.Error)
+  }
+
+  @Test
+  fun `startup maintenance failure does not break the screen`() = runTest {
+    val entry = sampleEntry("entry-startup", "/storage/emulated/0/Download/startup.tmp")
+    val fake = FakeTrashController(initialEntries = listOf(entry)).apply {
+      startupFailure = IllegalStateException("Disco ocupado")
+    }
+    val viewModel = TrashViewModel(fake)
+    advanceUntilIdle()
+
+    assertEquals(1, viewModel.uiState.value.entries.size)
+    assertFalse(viewModel.uiState.value.isBusy)
+  }
+
   private fun sampleEntry(id: String, path: String) = TrashEntry(
     id = id,
     originalPath = path,
@@ -122,6 +171,9 @@ class TrashViewModelTest {
     val historyFlow = MutableStateFlow<List<OperationHistoryRecord>>(emptyList())
 
     var startupCalled = false
+    var startupFailure: Throwable? = null
+    var deleteFailure: Throwable? = null
+    var deleteSummaryOverride: PurgeSummary? = null
     val restoredIds = mutableListOf<String>()
     val purgedIds = mutableListOf<String>()
     var emptied = false
@@ -132,6 +184,7 @@ class TrashViewModelTest {
 
     override suspend fun reconcileAndPurgeOnStartup() {
       startupCalled = true
+      startupFailure?.let { throw it }
     }
 
     override suspend fun restoreEntry(entryId: String): TrashRestoreResult {
@@ -142,6 +195,8 @@ class TrashViewModelTest {
     }
 
     override suspend fun deletePermanently(entryId: String): PurgeSummary {
+      deleteFailure?.let { throw it }
+      deleteSummaryOverride?.let { return it }
       purgedIds.add(entryId)
       entriesFlow.value = entriesFlow.value.filterNot { it.id == entryId }
       return PurgeSummary(purgedCount = 1, freedBytes = 1024L)

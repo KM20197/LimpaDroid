@@ -624,7 +624,16 @@ class TrashRepository(
     if (entity.state != TrashEntryState.IN_TRASH.name) return@withLock PurgeSummary(0, 0L)
 
     val trashRoot = resolveTrashRootOrNull() ?: return@withLock PurgeSummary(0, 0L)
-    trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entity.trashPath))
+    // Caminho inválido ou falha de E/S não devem escapar como exceção para a interface: nada é apagado,
+    // a entrada permanece na lixeira e o chamador recebe um resumo vazio (0 item excluído).
+    try {
+      trashStorage.deleteTrashedPayload(trashRoot, Paths.get(entity.trashPath))
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (t: Throwable) {
+      scanLogger.logEvent("TRASH_PURGE_MANUAL_FAILED", "id=$entryId reason=${t.message}")
+      return@withLock PurgeSummary(0, 0L)
+    }
     val now = clock.nowMillis()
     trashEntryDao.updateLifecycleState(
       id = entryId,

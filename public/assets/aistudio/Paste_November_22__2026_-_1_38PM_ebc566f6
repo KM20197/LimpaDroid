@@ -1,0 +1,1769 @@
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepository.kt b/app/src/main/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepository.kt
+index 6827c44..028e5d4 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepository.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepository.kt
+@@ -38,9 +38,17 @@ class AndroidInstalledAppsRepository(
+       return@withLock InstalledAppsSnapshot(
+         presentApps = emptyList(),
+         knownApps = existing.values.map { it.toDomain() },
++        isReliable = false,
++        unreliableReason = "O PackageManager não retornou a lista de aplicativos instalados.",
+       )
+     }
+ 
++    // Salvaguarda contra leitura parcial: se a lista encolheu mais da metade em relação ao
++    // histórico, não registra remoções (evitaria marcar aplicativos instalados como removidos).
++    val previouslyPresentCount = existing.values.count { it.removedAt == null }
++    val listLooksTruncated = previouslyPresentCount >= MIN_HISTORY_FOR_TRUNCATION_CHECK &&
++      presentApps.size * 2 < previouslyPresentCount
++
+     val presentByPackage = presentApps.associateBy { it.packageName }
+     val updatedEntities = mutableListOf<KnownAppEntity>()
+ 
+@@ -58,13 +66,18 @@ class AndroidInstalledAppsRepository(
+       )
+     }
+ 
++    val untouchedKnown = mutableListOf<KnownAppEntity>()
+     for ((pkg, previous) in existing) {
+       if (pkg !in presentByPackage) {
+-        updatedEntities.add(
+-          previous.copy(
+-            removedAt = previous.removedAt ?: now,
+-          ),
+-        )
++        if (listLooksTruncated) {
++          untouchedKnown.add(previous)
++        } else {
++          updatedEntities.add(
++            previous.copy(
++              removedAt = previous.removedAt ?: now,
++            ),
++          )
++        }
+       }
+     }
+ 
+@@ -72,7 +85,13 @@ class AndroidInstalledAppsRepository(
+ 
+     return@withLock InstalledAppsSnapshot(
+       presentApps = presentApps,
+-      knownApps = updatedEntities.map { it.toDomain() },
++      knownApps = (updatedEntities + untouchedKnown).map { it.toDomain() },
++      isReliable = !listLooksTruncated,
++      unreliableReason = if (listLooksTruncated) {
++        "A lista de aplicativos instalados parece incompleta (${presentApps.size} de $previouslyPresentCount conhecidos)."
++      } else {
++        null
++      },
+     )
+   }
+ 
+@@ -84,6 +103,12 @@ class AndroidInstalledAppsRepository(
+     return InstalledAppsSnapshot(
+       presentApps = presentApps,
+       knownApps = knownApps,
++      isReliable = presentApps.isNotEmpty(),
++      unreliableReason = if (presentApps.isEmpty()) {
++        "O PackageManager não retornou a lista de aplicativos instalados."
++      } else {
++        null
++      },
+     )
+   }
+ 
+@@ -96,6 +121,8 @@ class AndroidInstalledAppsRepository(
+   )
+ 
+   companion object {
++    private const val MIN_HISTORY_FOR_TRUNCATION_CHECK = 8
++
+     fun readPresentPackages(context: Context): List<InstalledAppInfo> {
+       val pm = context.packageManager
+       val packages: List<PackageInfo> = queryInstalledPackageInfos(pm)
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/domain/fs/TrashStorage.kt b/app/src/main/java/io/github/km20197/limpadroid/domain/fs/TrashStorage.kt
+index 659a480..26a84a9 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/domain/fs/TrashStorage.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/domain/fs/TrashStorage.kt
+@@ -3,6 +3,7 @@ package io.github.km20197.limpadroid.domain.fs
+ import io.github.km20197.limpadroid.domain.model.TrashMetadataPayload
+ import java.io.IOException
+ import java.nio.file.AtomicMoveNotSupportedException
++import java.nio.file.FileAlreadyExistsException
+ import java.nio.file.FileVisitResult
+ import java.nio.file.Files
+ import java.nio.file.LinkOption
+@@ -33,12 +34,18 @@ data class RestoredPayloadInfo(
+   val sizeBytes: Long,
+ )
+ 
++/** Espaço livre insuficiente para concluir uma cópia de contingência. */
++class InsufficientSpaceException(message: String) : IOException(message)
++
+ class TrashStorage {
+   private val json = Json {
+     ignoreUnknownKeys = true
+     prettyPrint = true
+   }
+ 
++  /** Ponto de observação para testes: executado após reservar o destino e antes de mover na restauração. */
++  internal var beforeRestoreMoveHook: ((Path) -> Unit)? = null
++
+   fun resolveTrashRoot(storageRoot: Path): Path =
+     storageRoot.resolve("Documents").resolve("LimpaDroid").resolve(TRASH_DIR_NAME)
+ 
+@@ -51,6 +58,31 @@ class TrashStorage {
+ 
+   fun resolveMetadataPath(entryDir: Path): Path = entryDir.resolve(METADATA_FILE_NAME)
+ 
++  /**
++   * Confirma que [payloadPath] tem exatamente a forma `<raiz>/.lixeira/<yyyyMMdd>/<id>/payload`,
++   * sem segmentos `.`/`..` e sem links simbólicos nos três níveis. Quando [trashRoot] é informado,
++   * a raiz da lixeira também deve coincidir. Nenhuma exclusão recursiva ocorre fora dessa estrutura.
++   */
++  fun isManagedPayloadPath(payloadPath: Path, trashRoot: Path? = null): Boolean {
++    val absolute = payloadPath.toAbsolutePath()
++    val normalized = absolute.normalize()
++    if (absolute != normalized) return false
++    if (normalized.fileName?.toString() != PAYLOAD_NAME) return false
++    val entryDir = normalized.parent ?: return false
++    val dayDir = entryDir.parent ?: return false
++    val root = dayDir.parent ?: return false
++    if (root.fileName?.toString() != TRASH_DIR_NAME) return false
++    if (!DAY_DIR_REGEX.matches(dayDir.fileName?.toString().orEmpty())) return false
++    if (!ENTRY_ID_REGEX.matches(entryDir.fileName?.toString().orEmpty())) return false
++    if (trashRoot != null && !isSameDirectory(root, trashRoot)) return false
++    return !Files.isSymbolicLink(root) && !Files.isSymbolicLink(dayDir) && !Files.isSymbolicLink(entryDir)
++  }
++
++  private fun isSameDirectory(a: Path, b: Path): Boolean {
++    if (a.toAbsolutePath().normalize() == b.toAbsolutePath().normalize()) return true
++    return runCatching { a.toRealPath() == b.toRealPath() }.getOrDefault(false)
++  }
++
+   fun ensureTrashRootInitialized(trashRoot: Path) {
+     Files.createDirectories(trashRoot)
+     val nomedia = trashRoot.resolve(".nomedia")
+@@ -88,6 +120,7 @@ class TrashStorage {
+       expectedSha256 = sha256,
+       originalMtime = originalMtime,
+       forceCopyFallback = forceCopyFallback,
++      replaceExisting = true,
+     )
+ 
+     val payload = metadataBuilder(payloadDest, sizeBytes, sha256, originalMtime)
+@@ -109,41 +142,60 @@ class TrashStorage {
+     expectedSha256: String?,
+     pathGuard: PathGuard,
+     forceCopyFallback: Boolean = false,
++    trashRoot: Path? = null,
+   ): RestoredPayloadInfo = withContext(Dispatchers.IO) {
++    if (!isManagedPayloadPath(payloadPath, trashRoot)) {
++      throw SecurityException("Caminho fora da estrutura da lixeira; nada foi restaurado: $payloadPath")
++    }
+     if (!Files.exists(payloadPath, LinkOption.NOFOLLOW_LINKS)) {
+       throw IOException("Conteúdo ausente na lixeira: $payloadPath")
+     }
+ 
+-    val targetPath = resolveNonConflictingRestorePath(desiredOriginalPath)
+-    when (val guardResult = pathGuard.validate(targetPath)) {
+-      is PathGuardResult.Allowed -> Unit
+-      is PathGuardResult.Rejected -> {
+-        throw SecurityException("Destino de restauração bloqueado (${guardResult.reason}): ${guardResult.detail}")
+-      }
+-    }
+-
+-    targetPath.parent?.let { Files.createDirectories(it) }
+-
+     val attrs = Files.readAttributes(payloadPath, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+     val isRegularFile = attrs.isRegularFile
+     val sizeBytes = if (isRegularFile) attrs.size() else computeDirectorySize(payloadPath)
+     val sha256 = if (isRegularFile) (expectedSha256 ?: Hasher.sha256(payloadPath, Dispatchers.IO)) else null
+ 
+-    movePayloadWithVerification(
+-      source = payloadPath,
+-      destination = targetPath,
+-      isRegularFile = isRegularFile,
+-      expectedSizeBytes = sizeBytes,
+-      expectedSha256 = sha256,
+-      originalMtime = originalMtime,
+-      forceCopyFallback = forceCopyFallback,
+-    )
++    // O destino é reservado sem sobrescrita: se outro arquivo surgir entre a verificação e a
++    // movimentação, a operação recomeça com o próximo sufixo livre em vez de substituí-lo.
++    var restoredTarget: Path? = null
++    var attempt = 0
++    while (restoredTarget == null) {
++      val candidate = resolveNonConflictingRestorePath(desiredOriginalPath)
++      when (val guardResult = pathGuard.validate(candidate)) {
++        is PathGuardResult.Allowed -> Unit
++        is PathGuardResult.Rejected -> {
++          throw SecurityException("Destino de restauração bloqueado (${guardResult.reason}): ${guardResult.detail}")
++        }
++      }
++      candidate.parent?.let { Files.createDirectories(it) }
++      beforeRestoreMoveHook?.invoke(candidate)
++      try {
++        movePayloadWithVerification(
++          source = payloadPath,
++          destination = candidate,
++          isRegularFile = isRegularFile,
++          expectedSizeBytes = sizeBytes,
++          expectedSha256 = sha256,
++          originalMtime = originalMtime,
++          forceCopyFallback = forceCopyFallback,
++          replaceExisting = false,
++        )
++        restoredTarget = candidate
++      } catch (_: FileAlreadyExistsException) {
++        attempt += 1
++        if (attempt >= MAX_RESTORE_ATTEMPTS) {
++          throw IOException("Não foi possível reservar um destino livre para a restauração.")
++        }
++      }
++    }
++    val targetPath = checkNotNull(restoredTarget)
+ 
+     runCatching {
+       Files.setLastModifiedTime(targetPath, FileTime.fromMillis(originalMtime))
+     }
+ 
+-    val entryDir = payloadPath.parent
++    val entryDir = payloadPath.toAbsolutePath().normalize().parent
+     if (entryDir != null) {
+       deleteRecursively(entryDir)
+       pruneEmptyDateDir(entryDir.parent)
+@@ -155,14 +207,18 @@ class TrashStorage {
+     )
+   }
+ 
+-  suspend fun deleteTrashedPayload(trashPath: Path) = withContext(Dispatchers.IO) {
+-    val entryDir = trashPath.parent
+-    if (entryDir != null && entryDir.fileName?.toString() != TRASH_DIR_NAME) {
+-      deleteRecursively(entryDir)
+-      pruneEmptyDateDir(entryDir.parent)
+-    } else if (Files.exists(trashPath, LinkOption.NOFOLLOW_LINKS)) {
+-      deleteRecursively(trashPath)
++  /**
++   * Apaga definitivamente a entrada da lixeira que contém [trashPath]. Recusa (com [SecurityException])
++   * qualquer caminho que não siga `<raiz>/.lixeira/<yyyyMMdd>/<id>/payload`, pois a exclusão é
++   * recursiva sobre o diretório da entrada.
++   */
++  suspend fun deleteTrashedPayload(trashPath: Path, trashRoot: Path? = null) = withContext(Dispatchers.IO) {
++    if (!isManagedPayloadPath(trashPath, trashRoot)) {
++      throw SecurityException("Caminho fora da estrutura da lixeira; nada foi apagado: $trashPath")
+     }
++    val entryDir = trashPath.toAbsolutePath().normalize().parent ?: return@withContext
++    deleteRecursively(entryDir)
++    pruneEmptyDateDir(entryDir.parent)
+   }
+ 
+   fun writeMetadata(metadataPath: Path, payload: TrashMetadataPayload) {
+@@ -193,6 +249,7 @@ class TrashStorage {
+             break
+           }
+           if (!Files.isDirectory(dayDir, LinkOption.NOFOLLOW_LINKS)) continue
++          if (!DAY_DIR_REGEX.matches(dayDir.fileName?.toString().orEmpty())) continue
+           try {
+             Files.newDirectoryStream(dayDir).use { entryStream ->
+               val entryIterator = entryStream.iterator()
+@@ -204,17 +261,17 @@ class TrashStorage {
+                   break
+                 }
+                 if (!Files.isDirectory(entryDir, LinkOption.NOFOLLOW_LINKS)) continue
++                val entryName = entryDir.fileName?.toString().orEmpty()
++                if (!ENTRY_ID_REGEX.matches(entryName)) continue
+                 val metadataFile = resolveMetadataPath(entryDir)
+                 if (!Files.isRegularFile(metadataFile, LinkOption.NOFOLLOW_LINKS)) continue
+                 val parsed = readMetadata(metadataFile) ?: continue
++                // O metadata.json é editável por terceiros: o id deve coincidir com o diretório e o
++                // caminho do payload é sempre derivado do diretório, nunca do conteúdo do arquivo.
++                if (parsed.id != entryName) continue
+                 val payloadFile = resolvePayloadPath(entryDir)
+-                val fallbackTrashFile = Paths.get(parsed.trashPath)
+-                val resolvedTrash = when {
+-                  Files.exists(payloadFile, LinkOption.NOFOLLOW_LINKS) -> payloadFile
+-                  Files.exists(fallbackTrashFile, LinkOption.NOFOLLOW_LINKS) -> fallbackTrashFile
+-                  else -> null
+-                } ?: continue
+-                recovered.add(parsed.copy(trashPath = resolvedTrash.toString()))
++                if (!Files.exists(payloadFile, LinkOption.NOFOLLOW_LINKS)) continue
++                recovered.add(parsed.copy(trashPath = payloadFile.toString()))
+               }
+             }
+           } catch (_: java.nio.file.DirectoryIteratorException) {
+@@ -255,6 +312,13 @@ class TrashStorage {
+     }
+   }
+ 
++  /**
++   * Move [source] para [destination] verificando integridade.
++   *
++   * Com [replaceExisting] = `true` (destino exclusivo e novo, como a pasta da entrada da lixeira) usa
++   * `ATOMIC_MOVE`. Com `false` (restauração) nunca substitui um arquivo existente: lança
++   * [FileAlreadyExistsException], e o destino pertencente a terceiros jamais é apagado.
++   */
+   private suspend fun movePayloadWithVerification(
+     source: Path,
+     destination: Path,
+@@ -263,11 +327,18 @@ class TrashStorage {
+     expectedSha256: String?,
+     originalMtime: Long,
+     forceCopyFallback: Boolean,
++    replaceExisting: Boolean,
+   ) {
+     if (!forceCopyFallback) {
+       try {
+-        Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE)
++        if (replaceExisting) {
++          Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE)
++        } else {
++          Files.move(source, destination)
++        }
+         return
++      } catch (e: FileAlreadyExistsException) {
++        throw e
+       } catch (_: AtomicMoveNotSupportedException) {
+         // Fallback para cópia + verificação
+       } catch (_: IOException) {
+@@ -275,9 +346,17 @@ class TrashStorage {
+       }
+     }
+ 
++    // Só removemos o destino em caso de falha se fomos nós que o criamos.
++    var destinationOwned = replaceExisting
+     try {
++      ensureEnoughSpace(destination.parent, expectedSizeBytes)
+       if (isRegularFile) {
+-        Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING)
++        if (replaceExisting) {
++          Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING)
++        } else {
++          Files.copy(source, destination)
++          destinationOwned = true
++        }
+         val copiedSize = Files.size(destination)
+         if (copiedSize != expectedSizeBytes) {
+           throw IOException("Falha de verificação de tamanho na cópia ($copiedSize != $expectedSizeBytes)")
+@@ -293,6 +372,10 @@ class TrashStorage {
+         }
+         Files.delete(source)
+       } else {
++        if (!replaceExisting) {
++          Files.createDirectory(destination)
++          destinationOwned = true
++        }
+         copyDirectoryRecursively(source, destination)
+         val copiedSize = computeDirectorySize(destination)
+         if (copiedSize != expectedSizeBytes) {
+@@ -301,11 +384,24 @@ class TrashStorage {
+         deleteRecursively(source)
+       }
+     } catch (t: Throwable) {
+-      runCatching { deleteRecursively(destination) }
++      if (destinationOwned) {
++        runCatching { deleteRecursively(destination) }
++      }
+       throw t
+     }
+   }
+ 
++  private fun ensureEnoughSpace(directory: Path?, requiredBytes: Long) {
++    if (directory == null || requiredBytes <= 0L) return
++    val usable = runCatching { directory.toFile().usableSpace }.getOrDefault(0L)
++    if (usable <= 0L) return // valor desconhecido: a cópia falhará por conta própria se faltar espaço
++    if (usable < requiredBytes + SPACE_SAFETY_MARGIN_BYTES) {
++      throw InsufficientSpaceException(
++        "Espaço livre insuficiente para a cópia de contingência (necessário: $requiredBytes bytes; disponível: $usable bytes).",
++      )
++    }
++  }
++
+   private fun copyDirectoryRecursively(sourceDir: Path, targetDir: Path) {
+     Files.walkFileTree(
+       sourceDir,
+@@ -385,6 +481,11 @@ class TrashStorage {
+     const val PAYLOAD_NAME = "payload"
+     const val METADATA_FILE_NAME = "metadata.json"
+ 
++    private const val MAX_RESTORE_ATTEMPTS = 50
++    private const val SPACE_SAFETY_MARGIN_BYTES = 64L * 1024L * 1024L
++    private val DAY_DIR_REGEX = Regex("^\\d{8}$")
++    private val ENTRY_ID_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
++
+     private val DAY_FORMATTER: DateTimeFormatter =
+       DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC)
+   }
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/domain/pkg/InstalledAppsRepository.kt b/app/src/main/java/io/github/km20197/limpadroid/domain/pkg/InstalledAppsRepository.kt
+index fa3af41..b7d1681 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/domain/pkg/InstalledAppsRepository.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/domain/pkg/InstalledAppsRepository.kt
+@@ -19,6 +19,12 @@ data class KnownAppRecord(
+ data class InstalledAppsSnapshot(
+   val presentApps: List<InstalledAppInfo>,
+   val knownApps: List<KnownAppRecord>,
++  /**
++   * `false` quando a leitura do PackageManager falhou ou parece incompleta. Análises que dependem
++   * da lista de pacotes presentes (órfãos) não devem prosseguir nesse caso.
++   */
++  val isReliable: Boolean = true,
++  val unreliableReason: String? = null,
+ )
+ 
+ object AppIdentifierNormalizer {
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngine.kt b/app/src/main/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngine.kt
+index bfee549..b6d0eea 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngine.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngine.kt
+@@ -44,6 +44,30 @@ class OrphanScanEngine(
+     emit(ScanEvent.Started(sessionId = config.sessionId, resumed = config.resumed))
+ 
+     val snapshot = installedAppsRepository.syncKnownApps()
++    if (!snapshot.isReliable) {
++      // Sem a lista confiável de pacotes presentes, qualquer pasta de aplicativo pareceria órfã.
++      emit(
++        ScanEvent.ErrorLogged(
++          WalkError(
++            path = "PackageManager",
++            errorType = "InstalledAppsUnreliable",
++            message = snapshot.unreliableReason
++              ?: "Lista de aplicativos instalados incompleta; análise de órfãos cancelada por segurança.",
++          ),
++        ),
++      )
++      emit(
++        ScanEvent.Done(
++          scannedFiles = 0L,
++          scannedDirs = 0L,
++          scannedBytes = 0L,
++          candidatesCount = 0,
++          errorCount = config.initialErrorCount + 1,
++          durationMs = (System.nanoTime() - startNanos) / 1_000_000L,
++        ),
++      )
++      return@flow
++    }
+     val classifier = OrphanDirectoryClassifier(
+       presentApps = snapshot.presentApps,
+       knownApps = snapshot.knownApps,
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRules.kt b/app/src/main/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRules.kt
+index e0bc0d8..5c87ae8 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRules.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRules.kt
+@@ -89,10 +89,13 @@ class OrphanDirectoryClassifier(
+       if (!AppIdentifierNormalizer.isPackageFormat(folderName)) return null
+       val lower = folderName.lowercase(Locale.ROOT)
+       if (lower in presentPackagesLower) return null
++      // O Android pode manter Android/media após a desinstalação (mídia do usuário). Somente um
++      // aplicativo comprovadamente removido (registro histórico) justifica confiança alta/pré-seleção.
++      val removedMatch = removedByPackageLower[lower]
+       return OrphanMatch(
+         ruleId = OrphanRuleId.ORPHAN_MEDIA_PKG,
+-        confidence = Confidence.HIGH,
+-        matchedApp = removedByPackageLower[lower],
++        confidence = if (removedMatch != null) Confidence.HIGH else Confidence.MEDIUM,
++        matchedApp = removedMatch,
+       )
+     }
+ 
+@@ -208,7 +211,8 @@ class OrphanDirectoryClassifier(
+       }
+       return when (match.ruleId) {
+         OrphanRuleId.ORPHAN_MEDIA_PKG ->
+-          "Subpasta de Android/media para pacote ausente: $folderName"
++          "Subpasta de Android/media de pacote ausente, sem registro de remoção: $folderName. " +
++            "Pode conter mídia preservada pelo aplicativo."
+         OrphanRuleId.ORPHAN_ROOT_KNOWN ->
+           "Pasta correspondente a aplicativo removido: $folderName"
+         OrphanRuleId.ORPHAN_ROOT_PATTERN ->
+diff --git a/app/src/main/java/io/github/km20197/limpadroid/trash/TrashRepository.kt b/app/src/main/java/io/github/km20197/limpadroid/trash/TrashRepository.kt
+index 39af31e..6dcbdd6 100644
+--- a/app/src/main/java/io/github/km20197/limpadroid/trash/TrashRepository.kt
++++ b/app/src/main/java/io/github/km20197/limpadroid/trash/TrashRepository.kt
+@@ -31,11 +31,17 @@ import io.github.km20197.limpadroid.domain.model.TrashRestoreResult
+ import io.github.km20197.limpadroid.domain.model.TrashStats
+ import java.nio.file.Files
+ import java.nio.file.LinkOption
++import java.nio.file.Path
+ import java.nio.file.Paths
+ import java.util.UUID
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.NonCancellable
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.map
++import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.sync.withLock
++import kotlinx.coroutines.withContext
+ 
+ class TrashRepository(
+   private val trashEntryDao: TrashEntryDao,
+@@ -49,6 +55,13 @@ class TrashRepository(
+   private val scanCandidateDao: ScanCandidateDao? = null,
+ ) {
+ 
++  /**
++   * Serializa todas as operações que alteram a lixeira (mover, restaurar, expurgar, reconciliar).
++   * Evita, por exemplo, que a reconciliação do PurgeWorker apague um payload parcial enquanto uma
++   * movimentação com cópia de contingência ainda está em andamento.
++   */
++  private val mutationMutex = Mutex()
++
+   val inTrashEntries: Flow<List<TrashEntry>> =
+     trashEntryDao.observeInTrashEntries().map { list -> list.map { it.toDomain() } }
+ 
+@@ -79,6 +92,16 @@ class TrashRepository(
+     expectedMtime: Long? = candidate.lastModified,
+     userExcludedPaths: Set<java.nio.file.Path> = emptySet(),
+     forceCopyFallback: Boolean = false,
++  ): TrashMoveResult = mutationMutex.withLock {
++    moveToTrashLocked(candidate, expectedSizeBytes, expectedMtime, userExcludedPaths, forceCopyFallback)
++  }
++
++  private suspend fun moveToTrashLocked(
++    candidate: Candidate,
++    expectedSizeBytes: Long?,
++    expectedMtime: Long?,
++    userExcludedPaths: Set<java.nio.file.Path>,
++    forceCopyFallback: Boolean,
+   ): TrashMoveResult {
+     val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
+     val storageRoot = when (rootResolution) {
+@@ -224,22 +247,140 @@ class TrashRepository(
+       )
+     } catch (t: Throwable) {
+       val reason = t.message ?: t.javaClass.simpleName
++      // A falha (ou o cancelamento) pode ter ocorrido depois de o arquivo já ter sido movido.
++      // O diário é resolvido mesmo com a corrotina cancelada, para nunca deixar um arquivo
++      // preso na lixeira sem registro.
++      val settled = withContext(NonCancellable) {
++        settleInterruptedMove(
++          entity = pendingEntity,
++          entryDir = entryDir,
++          trashRoot = trashRoot,
++          reason = reason,
++        )
++      }
++      if (t is CancellationException) throw t
++      settled
++    }
++  }
++
++  /**
++   * Resolve o estado de uma movimentação interrompida, conforme o que existe em disco:
++   * - origem ausente e payload presente: a movimentação terminou; completa metadata e índice;
++   * - origem e payload presentes: cópia parcial; remove o payload e preserva o original;
++   * - demais casos: marca a entrada como FAILED.
++   */
++  private suspend fun settleInterruptedMove(
++    entity: TrashEntryEntity,
++    entryDir: Path,
++    trashRoot: Path,
++    reason: String,
++  ): TrashMoveResult {
++    val source = Paths.get(entity.originalPath)
++    val payload = trashStorage.resolvePayloadPath(entryDir)
++    val sourceExists = Files.exists(source, LinkOption.NOFOLLOW_LINKS)
++    val payloadExists = Files.exists(payload, LinkOption.NOFOLLOW_LINKS)
++
++    if (!sourceExists && payloadExists) {
++      val promoted = runCatching { promoteCompletedMove(entity) }.getOrNull()
++      if (promoted != null) {
++        runCatching { mediaScannerHook.scanPaths(listOf(entity.originalPath)) }
++        scanLogger.logEvent("TRASH_MOVE_RECOVERED", "id=${entity.id} reason=$reason")
++        return TrashMoveResult.Moved(promoted)
++      }
++      // Não foi possível registrar agora: a entrada permanece PENDING e a reconciliação conclui depois.
++      scanLogger.logEvent("TRASH_MOVE_PENDING_RECONCILE", "id=${entity.id} reason=$reason")
++      return TrashMoveResult.Failed(reason)
++    }
++
++    if (sourceExists) {
++      runCatching { trashStorage.deleteTrashedPayload(payload, trashRoot) }
++    }
++    runCatching {
+       trashEntryDao.updateLifecycleState(
+-        id = entryId,
++        id = entity.id,
+         state = TrashEntryState.FAILED.name,
+         restoredAt = null,
+         restoredPath = null,
+         purgedAt = null,
+-        failureReason = reason,
++        failureReason = if (sourceExists) reason else "Origem e destino ausentes após a falha: $reason",
+       )
+-      scanLogger.logEvent("TRASH_MOVE_FAILED", "id=$entryId path=$sourcePath reason=$reason")
+-      TrashMoveResult.Failed(reason)
+     }
++    scanLogger.logEvent("TRASH_MOVE_FAILED", "id=${entity.id} path=${entity.originalPath} reason=$reason")
++    return TrashMoveResult.Failed(reason)
++  }
++
++  /** Completa o registro de uma movimentação cujo payload já está na lixeira. */
++  private suspend fun promoteCompletedMove(entry: TrashEntryEntity): TrashEntry? {
++    val payload = runCatching { Paths.get(entry.trashPath) }.getOrNull() ?: return null
++    val entryDir = payload.parent ?: return null
++    val metadataPath = trashStorage.resolveMetadataPath(entryDir)
++    if (!Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS)) {
++      trashStorage.writeMetadata(
++        metadataPath,
++        TrashMetadataPayload(
++          id = entry.id,
++          originalPath = entry.originalPath,
++          trashPath = entry.trashPath,
++          sizeBytes = entry.sizeBytes,
++          sha256 = entry.sha256,
++          originalMtime = entry.originalMtime,
++          category = entry.category,
++          ruleId = entry.ruleId,
++          deletedAt = entry.deletedAt,
++          expiresAt = entry.expiresAt,
++        ),
++      )
++    }
++    trashEntryDao.updateMovedState(
++      id = entry.id,
++      state = TrashEntryState.IN_TRASH.name,
++      trashPath = entry.trashPath,
++      sizeBytes = entry.sizeBytes,
++      sha256 = entry.sha256,
++      originalMtime = entry.originalMtime,
++      failureReason = null,
++    )
++    return trashEntryDao.getById(entry.id)?.toDomain()
++  }
++
++  private fun currentTrashRootOrNull(): Path? =
++    when (val resolution = storageVolumeResolver.resolvePrimarySharedStorage()) {
++      is StorageRootResolution.Available -> trashStorage.resolveTrashRoot(resolution.rootPath)
++      is StorageRootResolution.Unavailable -> null
++    }
++
++  /**
++   * Apaga o payload de [entry] somente se o caminho registrado seguir a estrutura da lixeira.
++   * Caminho inválido (índice corrompido ou metadata adulterado) nunca é apagado: a entrada é
++   * marcada como FAILED e nada é removido do armazenamento.
++   */
++  private suspend fun purgeEntryPayload(entry: TrashEntryEntity, trashRoot: Path?): Boolean {
++    val payload = runCatching { Paths.get(entry.trashPath) }.getOrNull()
++    if (payload == null || !trashStorage.isManagedPayloadPath(payload, trashRoot)) {
++      scanLogger.logEvent("TRASH_PURGE_REJECTED_UNMANAGED_PATH", "id=${entry.id}")
++      trashEntryDao.updateLifecycleState(
++        id = entry.id,
++        state = TrashEntryState.FAILED.name,
++        restoredAt = null,
++        restoredPath = null,
++        purgedAt = null,
++        failureReason = "Caminho da lixeira inválido; nenhum arquivo foi apagado.",
++      )
++      return false
++    }
++    return runCatching { trashStorage.deleteTrashedPayload(payload, trashRoot) }.isSuccess
+   }
+ 
+   suspend fun moveCandidatesToTrash(
+     records: List<ScanCandidateRecord>,
+     userExcludedPaths: Set<java.nio.file.Path> = emptySet(),
++  ): BatchTrashMoveSummary = mutationMutex.withLock {
++    moveCandidatesToTrashLocked(records, userExcludedPaths)
++  }
++
++  private suspend fun moveCandidatesToTrashLocked(
++    records: List<ScanCandidateRecord>,
++    userExcludedPaths: Set<java.nio.file.Path>,
+   ): BatchTrashMoveSummary {
+     if (records.isEmpty()) {
+       return BatchTrashMoveSummary(
+@@ -298,9 +439,12 @@ class TrashRepository(
+ 
+     for (record in safeRecords.sortedByDescending { it.candidate.path.length }) {
+       when (
+-        val result = moveToTrash(
++        val result = moveToTrashLocked(
+           candidate = record.candidate,
++          expectedSizeBytes = record.candidate.sizeBytes,
++          expectedMtime = record.candidate.lastModified,
+           userExcludedPaths = userExcludedPaths,
++          forceCopyFallback = false,
+         )
+       ) {
+         is TrashMoveResult.Moved -> {
+@@ -386,6 +530,13 @@ class TrashRepository(
+   suspend fun restoreEntry(
+     entryId: String,
+     forceCopyFallback: Boolean = false,
++  ): TrashRestoreResult = mutationMutex.withLock {
++    restoreEntryLocked(entryId, forceCopyFallback)
++  }
++
++  private suspend fun restoreEntryLocked(
++    entryId: String,
++    forceCopyFallback: Boolean,
+   ): TrashRestoreResult {
+     val entity = trashEntryDao.getById(entryId)
+       ?: return TrashRestoreResult.MissingPayload("Entrada não encontrada na lixeira.")
+@@ -402,7 +553,8 @@ class TrashRepository(
+     }
+ 
+     val pathGuard = DefaultPathGuard(rawStorageRoot = storageRoot, applicationId = applicationId)
+-    val payloadPath = Paths.get(entity.trashPath)
++    val payloadPath = runCatching { Paths.get(entity.trashPath) }.getOrNull()
++      ?: return TrashRestoreResult.Rejected("Caminho da lixeira inválido; nada foi restaurado.")
+     if (!Files.exists(payloadPath, LinkOption.NOFOLLOW_LINKS)) {
+       return TrashRestoreResult.MissingPayload("Arquivo ausente na lixeira: ${entity.trashPath}")
+     }
+@@ -415,6 +567,7 @@ class TrashRepository(
+         expectedSha256 = entity.sha256,
+         pathGuard = pathGuard,
+         forceCopyFallback = forceCopyFallback,
++        trashRoot = trashStorage.resolveTrashRoot(pathGuard.storageRoot),
+       )
+       val now = clock.nowMillis()
+       val restoredPathStr = restored.restoredPath.toString()
+@@ -459,11 +612,15 @@ class TrashRepository(
+     }
+   }
+ 
+-  suspend fun deletePermanently(entryId: String): PurgeSummary {
++  suspend fun deletePermanently(entryId: String): PurgeSummary = mutationMutex.withLock {
++    deletePermanentlyLocked(entryId)
++  }
++
++  private suspend fun deletePermanentlyLocked(entryId: String): PurgeSummary {
+     val entity = trashEntryDao.getById(entryId) ?: return PurgeSummary(0, 0L)
+     if (entity.state != TrashEntryState.IN_TRASH.name) return PurgeSummary(0, 0L)
+ 
+-    trashStorage.deleteTrashedPayload(Paths.get(entity.trashPath))
++    if (!purgeEntryPayload(entity, currentTrashRootOrNull())) return PurgeSummary(0, 0L)
+     val now = clock.nowMillis()
+     trashEntryDao.updateLifecycleState(
+       id = entryId,
+@@ -487,17 +644,18 @@ class TrashRepository(
+     return PurgeSummary(purgedCount = 1, freedBytes = entity.sizeBytes)
+   }
+ 
+-  suspend fun emptyTrash(): PurgeSummary {
++  suspend fun emptyTrash(): PurgeSummary = mutationMutex.withLock { emptyTrashLocked() }
++
++  private suspend fun emptyTrashLocked(): PurgeSummary {
+     val active = trashEntryDao.getByState(TrashEntryState.IN_TRASH.name)
+     if (active.isEmpty()) return PurgeSummary(0, 0L)
+ 
++    val trashRoot = currentTrashRootOrNull()
+     val now = clock.nowMillis()
+     var freed = 0L
+     var count = 0
+     for (entry in active) {
+-      runCatching {
+-        trashStorage.deleteTrashedPayload(Paths.get(entry.trashPath))
+-      }.onSuccess {
++      if (purgeEntryPayload(entry, trashRoot)) {
+         trashEntryDao.updateLifecycleState(
+           id = entry.id,
+           state = TrashEntryState.PURGED.name,
+@@ -526,17 +684,18 @@ class TrashRepository(
+     return PurgeSummary(purgedCount = count, freedBytes = freed)
+   }
+ 
+-  suspend fun purgeExpired(): PurgeSummary {
++  suspend fun purgeExpired(): PurgeSummary = mutationMutex.withLock { purgeExpiredLocked() }
++
++  private suspend fun purgeExpiredLocked(): PurgeSummary {
+     val now = clock.nowMillis()
+     val expired = trashEntryDao.getExpiredEntries(now)
+     if (expired.isEmpty()) return PurgeSummary(0, 0L)
+ 
++    val trashRoot = currentTrashRootOrNull()
+     var freed = 0L
+     var count = 0
+     for (entry in expired) {
+-      runCatching {
+-        trashStorage.deleteTrashedPayload(Paths.get(entry.trashPath))
+-      }.onSuccess {
++      if (purgeEntryPayload(entry, trashRoot)) {
+         trashEntryDao.updateLifecycleState(
+           id = entry.id,
+           state = TrashEntryState.PURGED.name,
+@@ -566,80 +725,77 @@ class TrashRepository(
+   }
+ 
+   suspend fun reconcilePendingAndRebuildIndex() {
+-    val pending = trashEntryDao.getByState(TrashEntryState.PENDING.name)
+-    for (entry in pending) {
++    mutationMutex.withLock { reconcilePendingAndRebuildIndexLocked() }
++  }
++
++  private suspend fun reconcilePendingAndRebuildIndexLocked() {
++    val trashRoot = currentTrashRootOrNull()
++    // FAILED entra na reconciliação porque versões anteriores marcavam FAILED mesmo quando o
++    // arquivo já estava na lixeira; esses itens são recuperados aqui.
++    val interrupted = trashEntryDao.getByState(TrashEntryState.PENDING.name) +
++      trashEntryDao.getByState(TrashEntryState.FAILED.name)
++    for (entry in interrupted) {
++      val isPending = entry.state == TrashEntryState.PENDING.name
++      val payload = runCatching { Paths.get(entry.trashPath) }.getOrNull()
++      if (payload == null || !trashStorage.isManagedPayloadPath(payload, trashRoot)) {
++        if (isPending) {
++          trashEntryDao.updateLifecycleState(
++            id = entry.id,
++            state = TrashEntryState.FAILED.name,
++            restoredAt = null,
++            restoredPath = null,
++            purgedAt = null,
++            failureReason = "Caminho da lixeira inválido; nada foi alterado.",
++          )
++          scanLogger.logEvent("TRASH_RECONCILED_UNMANAGED_PATH", "id=${entry.id}")
++        }
++        continue
++      }
+       val source = Paths.get(entry.originalPath)
+-      val payload = Paths.get(entry.trashPath)
+       val sourceExists = Files.exists(source, LinkOption.NOFOLLOW_LINKS)
+       val payloadExists = Files.exists(payload, LinkOption.NOFOLLOW_LINKS)
+ 
+       when {
+         !sourceExists && payloadExists -> {
+-          val entryDir = payload.parent
+-          if (entryDir != null) {
+-            val metadataPath = trashStorage.resolveMetadataPath(entryDir)
+-            if (!Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS)) {
+-              trashStorage.writeMetadata(
+-                metadataPath,
+-                TrashMetadataPayload(
+-                  id = entry.id,
+-                  originalPath = entry.originalPath,
+-                  trashPath = entry.trashPath,
+-                  sizeBytes = entry.sizeBytes,
+-                  sha256 = entry.sha256,
+-                  originalMtime = entry.originalMtime,
+-                  category = entry.category,
+-                  ruleId = entry.ruleId,
+-                  deletedAt = entry.deletedAt,
+-                  expiresAt = entry.expiresAt,
+-                ),
+-              )
+-            }
++          if (promoteCompletedMove(entry) != null) {
++            scanLogger.logEvent("TRASH_RECONCILED_PROMOTED", "id=${entry.id}")
+           }
+-          trashEntryDao.updateMovedState(
+-            id = entry.id,
+-            state = TrashEntryState.IN_TRASH.name,
+-            trashPath = entry.trashPath,
+-            sizeBytes = entry.sizeBytes,
+-            sha256 = entry.sha256,
+-            originalMtime = entry.originalMtime,
+-            failureReason = null,
+-          )
+-          scanLogger.logEvent("TRASH_RECONCILED_PROMOTED", "id=${entry.id}")
+         }
+ 
+         sourceExists && payloadExists -> {
+           // Falha durante cópia: preserva o original intacto e remove payload parcial.
+-          runCatching { trashStorage.deleteTrashedPayload(payload) }
+-          trashEntryDao.updateLifecycleState(
+-            id = entry.id,
+-            state = TrashEntryState.FAILED.name,
+-            restoredAt = null,
+-            restoredPath = null,
+-            purgedAt = null,
+-            failureReason = "Operação interrompida; arquivo original preservado.",
+-          )
+-          scanLogger.logEvent("TRASH_RECONCILED_ROLLED_BACK", "id=${entry.id}")
++          runCatching { trashStorage.deleteTrashedPayload(payload, trashRoot) }
++          if (isPending) {
++            trashEntryDao.updateLifecycleState(
++              id = entry.id,
++              state = TrashEntryState.FAILED.name,
++              restoredAt = null,
++              restoredPath = null,
++              purgedAt = null,
++              failureReason = "Operação interrompida; arquivo original preservado.",
++            )
++            scanLogger.logEvent("TRASH_RECONCILED_ROLLED_BACK", "id=${entry.id}")
++          }
+         }
+ 
+         else -> {
+-          trashEntryDao.updateLifecycleState(
+-            id = entry.id,
+-            state = TrashEntryState.FAILED.name,
+-            restoredAt = null,
+-            restoredPath = null,
+-            purgedAt = null,
+-            failureReason = "Origem e destino ausentes na reconciliação.",
+-          )
+-          scanLogger.logEvent("TRASH_RECONCILED_MISSING", "id=${entry.id}")
++          if (isPending) {
++            trashEntryDao.updateLifecycleState(
++              id = entry.id,
++              state = TrashEntryState.FAILED.name,
++              restoredAt = null,
++              restoredPath = null,
++              purgedAt = null,
++              failureReason = "Origem e destino ausentes na reconciliação.",
++            )
++            scanLogger.logEvent("TRASH_RECONCILED_MISSING", "id=${entry.id}")
++          }
+         }
+       }
+     }
+ 
+     // Reconstrução de índice a partir de metadata.json (ex.: após atualização/reinstalação).
+-    val rootResolution = storageVolumeResolver.resolvePrimarySharedStorage()
+-    if (rootResolution is StorageRootResolution.Available) {
+-      val trashRoot = trashStorage.resolveTrashRoot(rootResolution.rootPath)
++    if (trashRoot != null) {
+       val diskEntries = runCatching { trashStorage.scanRecoverableEntries(trashRoot) }.getOrDefault(emptyList())
+       for (meta in diskEntries) {
+         val existing = trashEntryDao.getById(meta.id)
+diff --git a/app/src/test/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepositoryRobolectricTest.kt b/app/src/test/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepositoryRobolectricTest.kt
+index 3917d2a..5bfcc9c 100644
+--- a/app/src/test/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepositoryRobolectricTest.kt
++++ b/app/src/test/java/io/github/km20197/limpadroid/data/pkg/AndroidInstalledAppsRepositoryRobolectricTest.kt
+@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.test.runTest
+ import org.junit.After
+ import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
+ import org.junit.Assert.assertNotNull
+ import org.junit.Assert.assertNull
+ import org.junit.Assert.assertTrue
+@@ -111,6 +112,107 @@ class AndroidInstalledAppsRepositoryRobolectricTest {
+       assertEquals(1_700_000_000_000L, byPkgAfterReinstall.getValue("com.example.game").firstSeen)
+     }
+ 
++  @Test
++  fun `syncKnownApps does not register removals when the package list looks truncated`() = runTest {
++    var now = 1_700_000_000_000L
++    val full = (1..10).map { InstalledAppInfo("com.example.app$it", "App $it") } +
++      InstalledAppInfo(context.packageName, "LimpaDroid")
++    var installed = full
++    val repo = AndroidInstalledAppsRepository(
++      context = context,
++      knownAppDao = db.knownAppDao(),
++      clock = AppClock { now },
++      packagesReader = { installed },
++    )
++
++    val first = repo.syncKnownApps()
++    assertTrue(first.isReliable)
++    assertTrue(first.knownApps.all { it.removedAt == null })
++
++    // Leitura parcial: 2 de 11 aplicativos conhecidos
++    now += 86_400_000L
++    installed = listOf(
++      InstalledAppInfo(context.packageName, "LimpaDroid"),
++      InstalledAppInfo("com.example.app1", "App 1"),
++    )
++    val second = repo.syncKnownApps()
++    assertFalse(second.isReliable)
++    assertNotNull(second.unreliableReason)
++    assertTrue(second.knownApps.all { it.removedAt == null })
++    assertTrue(db.knownAppDao().getAll().all { it.removedAt == null })
++
++    // Lista completa novamente: confiável e sem remoções
++    now += 86_400_000L
++    installed = full
++    val third = repo.syncKnownApps()
++    assertTrue(third.isReliable)
++    assertTrue(third.knownApps.all { it.removedAt == null })
++  }
++
++  @Test
++  fun `syncKnownApps and loadSnapshot report an unreliable snapshot when PackageManager returns nothing`() =
++    runTest {
++      val repo = AndroidInstalledAppsRepository(
++        context = context,
++        knownAppDao = db.knownAppDao(),
++        clock = AppClock { 1_700_000_000_000L },
++        packagesReader = { emptyList() },
++      )
++
++      val synced = repo.syncKnownApps()
++      assertFalse(synced.isReliable)
++      assertTrue(synced.presentApps.isEmpty())
++      assertNotNull(synced.unreliableReason)
++
++      val loaded = repo.loadSnapshot()
++      assertFalse(loaded.isReliable)
++    }
++
++  @Test
++  fun `ScanWorker produces no ORPHAN candidates when the package list is unreliable`() = runTest {
++    val root = tempFolder.newFolder("worker_orphan_unreliable").toPath().toRealPath()
++    Files.createDirectories(root.resolve("Android/media/com.some.app"))
++    Files.writeString(root.resolve("Android/media/com.some.app").resolve("dados.bin"), "importante")
++
++    val appsRepo = AndroidInstalledAppsRepository(
++      context = context,
++      knownAppDao = db.knownAppDao(),
++      clock = AppClock { 1_700_000_000_000L },
++      packagesReader = { emptyList() },
++    )
++    val scanRepo = ScanRepository(db.scanSessionDao(), db.scanCandidateDao(), db.scanErrorDao())
++    val session = scanRepo.createSession(ScanScope.ORPHAN, root.toString())
++
++    val deps = ScanWorkerDependencies(
++      scanRepository = scanRepo,
++      storageVolumeResolver = object : StorageVolumeResolver {
++        override fun resolvePrimarySharedStorage(): StorageRootResolution =
++          StorageRootResolution.Available(root, "Armazenamento de teste")
++      },
++      scanEngine = InfrastructureScanEngine(FileWalker()),
++      scanLogger = LocalScanLogger(tempFolder.newFolder("logs_unreliable")),
++      applicationId = context.packageName,
++      orphanScanEngine = OrphanScanEngine(appsRepo, context.packageName),
++    )
++
++    val worker = TestListenableWorkerBuilder<ScanWorker>(context)
++      .setWorkerFactory(
++        object : WorkerFactory() {
++          override fun createWorker(
++            appContext: Context,
++            workerClassName: String,
++            workerParameters: WorkerParameters,
++          ): ListenableWorker = ScanWorker(appContext, workerParameters, deps)
++        },
++      )
++      .setInputData(workDataOf(ScanWorker.KEY_SESSION_ID to session.id))
++      .build()
++
++    val result = worker.doWork()
++    assertTrue(result is ListenableWorker.Result.Success)
++    assertTrue(scanRepo.observeCategoryCandidates(Category.ORPHAN).first().isEmpty())
++  }
++
+   @Test
+   @Config(sdk = [30])
+   fun `readPresentPackages executes cleanly on API 30 fallback`() {
+diff --git a/app/src/test/java/io/github/km20197/limpadroid/domain/fs/TrashStorageTest.kt b/app/src/test/java/io/github/km20197/limpadroid/domain/fs/TrashStorageTest.kt
+index 71de5b0..81998c2 100644
+--- a/app/src/test/java/io/github/km20197/limpadroid/domain/fs/TrashStorageTest.kt
++++ b/app/src/test/java/io/github/km20197/limpadroid/domain/fs/TrashStorageTest.kt
+@@ -8,6 +8,7 @@ import java.nio.file.attribute.FileTime
+ import kotlinx.coroutines.test.runTest
+ import org.junit.Assert.assertEquals
+ import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
+ import org.junit.Assert.assertTrue
+ import org.junit.Before
+ import org.junit.Rule
+@@ -121,4 +122,186 @@ class TrashStorageTest {
+     )
+     assertFalse(Files.exists(entryDir, LinkOption.NOFOLLOW_LINKS))
+   }
++
++  private suspend fun trashFile(source: Path, id: String, atMillis: Long = 1_700_000_000_000L): MovedPayloadInfo {
++    val trashRoot = storage.resolveTrashRoot(storageRoot)
++    val entryDir = storage.allocateEntryDir(trashRoot, id, atMillis)
++    return storage.moveToTrash(
++      source = source,
++      trashRoot = trashRoot,
++      entryDir = entryDir,
++      metadataBuilder = { dest, size, sha, mtime ->
++        TrashMetadataPayload(
++          id = id,
++          originalPath = source.toString(),
++          trashPath = dest.toString(),
++          sizeBytes = size,
++          sha256 = sha,
++          originalMtime = mtime,
++          category = "SUPERFLUOUS",
++          ruleId = "TEST",
++          deletedAt = atMillis,
++          expiresAt = atMillis + 1_000L,
++        )
++      },
++    )
++  }
++
++  @Test
++  fun `isManagedPayloadPath accepts only the exact trash structure`() {
++    val trashRoot = storage.resolveTrashRoot(storageRoot)
++    val valid = trashRoot.resolve("20231114").resolve("entry-1").resolve("payload")
++
++    assertTrue(storage.isManagedPayloadPath(valid))
++    assertTrue(storage.isManagedPayloadPath(valid, trashRoot))
++    assertFalse(storage.isManagedPayloadPath(storageRoot.resolve("DCIM/Camera/a.jpg")))
++    assertFalse(storage.isManagedPayloadPath(trashRoot.resolve("20231114/entry-1/outro")))
++    assertFalse(storage.isManagedPayloadPath(trashRoot.resolve("payload")))
++    assertFalse(storage.isManagedPayloadPath(trashRoot.resolve("abc/entry-1/payload")))
++    assertFalse(storage.isManagedPayloadPath(trashRoot.resolve("20231114/../20231114/entry-1/payload")))
++    assertFalse(storage.isManagedPayloadPath(valid, storageRoot.resolve("Pictures").resolve(".lixeira")))
++  }
++
++  @Test
++  fun `deleteTrashedPayload refuses paths outside the trash and deletes nothing`() = runTest {
++    val dcim = Files.createDirectories(storageRoot.resolve("DCIM/Camera"))
++    val photo = Files.writeString(dcim.resolve("a.jpg"), "foto")
++    val sibling = Files.writeString(dcim.resolve("b.jpg"), "outra")
++
++    val failure = runCatching { storage.deleteTrashedPayload(photo) }.exceptionOrNull()
++
++    assertTrue(failure is SecurityException)
++    assertTrue(Files.exists(photo, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(sibling, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(dcim, LinkOption.NOFOLLOW_LINKS))
++  }
++
++  @Test
++  fun `deleteTrashedPayload removes only the entry directory and prunes the empty day directory`() = runTest {
++    val downloads = Files.createDirectories(storageRoot.resolve("Download"))
++    val keep = trashFile(Files.writeString(downloads.resolve("a.tmp"), "a"), "entry-keep")
++    val drop = trashFile(Files.writeString(downloads.resolve("b.tmp"), "b"), "entry-drop")
++    val trashRoot = storage.resolveTrashRoot(storageRoot)
++
++    storage.deleteTrashedPayload(drop.trashPath, trashRoot)
++
++    assertFalse(Files.exists(drop.trashPath, LinkOption.NOFOLLOW_LINKS))
++    assertFalse(Files.exists(drop.metadataPath, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(keep.trashPath, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(trashRoot, LinkOption.NOFOLLOW_LINKS))
++
++    storage.deleteTrashedPayload(keep.trashPath, trashRoot)
++    assertFalse(Files.exists(keep.trashPath.parent.parent, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(trashRoot, LinkOption.NOFOLLOW_LINKS))
++  }
++
++  @Test
++  fun `scanRecoverableEntries derives the payload from the entry directory and ignores tampered metadata`() =
++    runTest {
++      val downloads = Files.createDirectories(storageRoot.resolve("Download"))
++      val external = Files.writeString(downloads.resolve("externo.bin"), "nao-e-da-lixeira")
++      val trashRoot = storage.resolveTrashRoot(storageRoot)
++
++      // A: metadata com trashPath adulterado, mas payload legítimo no diretório da entrada
++      val a = trashFile(Files.writeString(downloads.resolve("a.tmp"), "a"), "entry-a")
++      val metaA = storage.readMetadata(a.metadataPath)!!
++      storage.writeMetadata(a.metadataPath, metaA.copy(trashPath = external.toString()))
++
++      // B: id do metadata diferente do nome do diretório
++      val b = trashFile(Files.writeString(downloads.resolve("b.tmp"), "b"), "entry-b")
++      val metaB = storage.readMetadata(b.metadataPath)!!
++      storage.writeMetadata(b.metadataPath, metaB.copy(id = "outro-id"))
++
++      // C: payload ausente; o metadata aponta para um arquivo externo existente
++      val c = trashFile(Files.writeString(downloads.resolve("c.tmp"), "c"), "entry-c")
++      val metaC = storage.readMetadata(c.metadataPath)!!
++      Files.delete(c.trashPath)
++      storage.writeMetadata(c.metadataPath, metaC.copy(trashPath = external.toString()))
++
++      val recovered = storage.scanRecoverableEntries(trashRoot)
++
++      assertEquals(listOf("entry-a"), recovered.map { it.id })
++      assertEquals(a.trashPath.toString(), recovered.single().trashPath)
++      assertTrue(Files.exists(external, LinkOption.NOFOLLOW_LINKS))
++    }
++
++  @Test
++  fun `restoreFromTrash refuses a payload outside the trash structure`() = runTest {
++    val dcim = Files.createDirectories(storageRoot.resolve("DCIM/Camera"))
++    val photo = Files.writeString(dcim.resolve("a.jpg"), "foto")
++    val pictures = Files.createDirectories(storageRoot.resolve("Pictures"))
++
++    val failure = runCatching {
++      storage.restoreFromTrash(
++        payloadPath = photo,
++        desiredOriginalPath = pictures.resolve("x.jpg"),
++        originalMtime = 0L,
++        expectedSha256 = null,
++        pathGuard = guard,
++      )
++    }.exceptionOrNull()
++
++    assertTrue(failure is SecurityException)
++    assertTrue(Files.exists(photo, LinkOption.NOFOLLOW_LINKS))
++    assertFalse(Files.exists(pictures.resolve("x.jpg"), LinkOption.NOFOLLOW_LINKS))
++  }
++
++  @Test
++  fun `restoreFromTrash never overwrites a file created after the destination was chosen`() = runTest {
++    val pictures = Files.createDirectories(storageRoot.resolve("Pictures"))
++    val original = Files.writeString(pictures.resolve("foto.jpg"), "dados-da-foto")
++    val moved = trashFile(original, "entry-race")
++
++    var injected = false
++    storage.beforeRestoreMoveHook = { target ->
++      if (!injected) {
++        injected = true
++        Files.writeString(target, "arquivo-do-usuario")
++      }
++    }
++
++    val restored = storage.restoreFromTrash(
++      payloadPath = moved.trashPath,
++      desiredOriginalPath = original,
++      originalMtime = 1_650_000_000_000L,
++      expectedSha256 = moved.sha256,
++      pathGuard = guard,
++    )
++
++    assertTrue(injected)
++    assertEquals("arquivo-do-usuario", Files.readString(original))
++    assertEquals(pictures.resolve("foto (restaurado).jpg"), restored.restoredPath)
++    assertEquals("dados-da-foto", Files.readString(restored.restoredPath))
++  }
++
++  @Test
++  fun `restoreFromTrash with copy fallback never overwrites or deletes a file created concurrently`() = runTest {
++    val pictures = Files.createDirectories(storageRoot.resolve("Pictures"))
++    val original = Files.writeString(pictures.resolve("foto.jpg"), "dados-da-foto")
++    val moved = trashFile(original, "entry-race-copy")
++
++    var injected = false
++    storage.beforeRestoreMoveHook = { target ->
++      if (!injected) {
++        injected = true
++        Files.writeString(target, "arquivo-do-usuario")
++      }
++    }
++
++    val restored = storage.restoreFromTrash(
++      payloadPath = moved.trashPath,
++      desiredOriginalPath = original,
++      originalMtime = 1_650_000_000_000L,
++      expectedSha256 = moved.sha256,
++      pathGuard = guard,
++      forceCopyFallback = true,
++    )
++
++    assertTrue(injected)
++    assertEquals("arquivo-do-usuario", Files.readString(original))
++    assertNotNull(restored.restoredPath)
++    assertEquals(pictures.resolve("foto (restaurado).jpg"), restored.restoredPath)
++    assertEquals("dados-da-foto", Files.readString(restored.restoredPath))
++    assertFalse(Files.exists(moved.trashPath.parent, LinkOption.NOFOLLOW_LINKS))
++  }
+ }
+diff --git a/app/src/test/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngineTest.kt b/app/src/test/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngineTest.kt
+index 427bea6..98cc04d 100644
+--- a/app/src/test/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngineTest.kt
++++ b/app/src/test/java/io/github/km20197/limpadroid/domain/scan/OrphanScanEngineTest.kt
+@@ -204,6 +204,81 @@ class OrphanScanEngineTest {
+     assertEquals(rootOrphan.toString(), found.single().candidate.path)
+   }
+ 
++  @Test
++  fun `scan aborts without candidates when the installed apps list is unreliable`() = runTest {
++    val root = tempFolder.newFolder("unreliable").toPath().toRealPath()
++    Files.createDirectories(root.resolve("Android/media/com.any.app"))
++    Files.createDirectories(root.resolve("Android/media/com.another.app"))
++    Files.createDirectories(root.resolve("net.unknown.tool"))
++
++    val repo = FakeInstalledAppsRepository(
++      InstalledAppsSnapshot(
++        presentApps = emptyList(),
++        knownApps = emptyList(),
++        isReliable = false,
++        unreliableReason = "O PackageManager não retornou a lista de aplicativos instalados.",
++      ),
++    )
++
++    val events = OrphanScanEngine(repo, selfAppId)
++      .scan(
++        ScanConfig(
++          sessionId = "s-unreliable",
++          scope = ScanScope.ORPHAN,
++          rootPath = root,
++          pathGuard = DefaultPathGuard(root, selfAppId),
++        ),
++      )
++      .toList()
++
++    assertTrue(events.filterIsInstance<ScanEvent.Found>().isEmpty())
++    val errors = events.filterIsInstance<ScanEvent.ErrorLogged>()
++    assertEquals(1, errors.size)
++    assertEquals("InstalledAppsUnreliable", errors.single().error.errorType)
++    val done = events.filterIsInstance<ScanEvent.Done>().single()
++    assertEquals(0, done.candidatesCount)
++    assertEquals(1, done.errorCount)
++  }
++
++  @Test
++  fun `Android media folder without a removal record is MEDIUM and not preselected`() = runTest {
++    val root = tempFolder.newFolder("unmatched_media").toPath().toRealPath()
++    val unknown = Files.createDirectories(root.resolve("Android/media/org.preserved.chat/Media"))
++    Files.writeString(unknown.resolve("foto.jpg"), "conteudo-do-usuario")
++    val removed = Files.createDirectories(root.resolve("Android/media/com.removed.game"))
++    Files.writeString(removed.resolve("save.bin"), "1234")
++
++    val repo = FakeInstalledAppsRepository(
++      InstalledAppsSnapshot(
++        presentApps = listOf(InstalledAppInfo(selfAppId, "LimpaDroid")),
++        knownApps = listOf(
++          KnownAppRecord("com.removed.game", "Removed Game", 100L, 200L, 1_700_000_000_000L),
++        ),
++      ),
++    )
++
++    val found = OrphanScanEngine(repo, selfAppId)
++      .scan(
++        ScanConfig(
++          sessionId = "s-unmatched",
++          scope = ScanScope.ORPHAN,
++          rootPath = root,
++          pathGuard = DefaultPathGuard(root, selfAppId),
++        ),
++      )
++      .toList()
++      .filterIsInstance<ScanEvent.Found>()
++      .associateBy { it.candidate.path }
++
++    val unmatched = found.getValue(root.resolve("Android/media/org.preserved.chat").toString()).candidate
++    assertEquals(Confidence.MEDIUM, unmatched.confidence)
++    assertFalse(unmatched.preselected)
++
++    val provenRemoval = found.getValue(root.resolve("Android/media/com.removed.game").toString()).candidate
++    assertEquals(Confidence.HIGH, provenRemoval.confidence)
++    assertTrue(provenRemoval.preselected)
++  }
++
+   private class FakeInstalledAppsRepository(
+     private val snapshot: InstalledAppsSnapshot,
+   ) : InstalledAppsRepository {
+diff --git a/app/src/test/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRulesTest.kt b/app/src/test/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRulesTest.kt
+index 49bf684..8387076 100644
+--- a/app/src/test/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRulesTest.kt
++++ b/app/src/test/java/io/github/km20197/limpadroid/domain/scan/rules/OrphanRulesTest.kt
+@@ -60,7 +60,7 @@ class OrphanRulesTest {
+   )
+ 
+   @Test
+-  fun `ORPHAN_MEDIA_PKG detects absent package folders with HIGH confidence and enrichment`() {
++  fun `ORPHAN_MEDIA_PKG is HIGH only with proof of removal and MEDIUM without a removal record`() {
+     // Positivos
+     val knownMedia = classifier.evaluateDirectory(listOf("Android", "media", "com.removed.game"))
+     assertNotNull(knownMedia)
+@@ -75,9 +75,12 @@ class OrphanRulesTest {
+     val unseenMedia = classifier.evaluateDirectory(listOf("Android", "media", "com.unseen.legacy"))
+     assertNotNull(unseenMedia)
+     assertEquals(OrphanRuleId.ORPHAN_MEDIA_PKG, unseenMedia!!.ruleId)
+-    assertEquals(Confidence.HIGH, unseenMedia.confidence)
+-    assertTrue(unseenMedia.preselected)
++    // Sem registro de remoção, o Android pode ter preservado mídia do usuário: nunca pré-selecionar.
++    assertEquals(Confidence.MEDIUM, unseenMedia.confidence)
++    assertFalse(unseenMedia.preselected)
+     assertNull(unseenMedia.matchedApp)
++    val unseenReason = OrphanDirectoryClassifier.formatReason(unseenMedia, "com.unseen.legacy")
++    assertTrue(unseenReason.contains("sem registro de remoção"))
+ 
+     // Negativos
+     assertNull(classifier.evaluateDirectory(listOf("Android", "media", "com.active.notes")))
+diff --git a/app/src/test/java/io/github/km20197/limpadroid/trash/TrashRepositoryResilienceTest.kt b/app/src/test/java/io/github/km20197/limpadroid/trash/TrashRepositoryResilienceTest.kt
+new file mode 100644
+index 0000000..dd3895e
+--- /dev/null
++++ b/app/src/test/java/io/github/km20197/limpadroid/trash/TrashRepositoryResilienceTest.kt
+@@ -0,0 +1,388 @@
++package io.github.km20197.limpadroid.trash
++
++import io.github.km20197.limpadroid.data.db.OperationHistoryDao
++import io.github.km20197.limpadroid.data.db.OperationHistoryEntity
++import io.github.km20197.limpadroid.data.db.TrashEntryDao
++import io.github.km20197.limpadroid.data.db.TrashEntryEntity
++import io.github.km20197.limpadroid.data.fs.StorageRootResolution
++import io.github.km20197.limpadroid.data.fs.StorageVolumeResolver
++import io.github.km20197.limpadroid.data.log.ScanLogger
++import io.github.km20197.limpadroid.domain.fs.MediaScannerHook
++import io.github.km20197.limpadroid.domain.fs.TrashStorage
++import io.github.km20197.limpadroid.domain.model.AppClock
++import io.github.km20197.limpadroid.domain.model.Candidate
++import io.github.km20197.limpadroid.domain.model.Category
++import io.github.km20197.limpadroid.domain.model.Confidence
++import io.github.km20197.limpadroid.domain.model.TrashEntryState
++import io.github.km20197.limpadroid.domain.model.TrashMetadataPayload
++import io.github.km20197.limpadroid.domain.model.TrashMoveResult
++import io.github.km20197.limpadroid.domain.model.TrashRestoreResult
++import java.io.IOException
++import java.nio.file.Files
++import java.nio.file.LinkOption
++import java.nio.file.Path
++import java.nio.file.attribute.FileTime
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.ensureActive
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.flowOf
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.test.runTest
++import kotlinx.coroutines.withContext
++import kotlinx.coroutines.yield
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Rule
++import org.junit.Test
++import org.junit.rules.TemporaryFolder
++
++/**
++ * Cenários de resiliência da lixeira (A1, A2 e A4) com DAOs em memória: não dependem de Room nem de
++ * Robolectric e exercitam falhas injetadas entre as etapas de uma movimentação.
++ */
++class TrashRepositoryResilienceTest {
++
++  @get:Rule
++  val tempFolder = TemporaryFolder()
++
++  private lateinit var storageRoot: Path
++  private lateinit var dao: FakeTrashEntryDao
++  private val storage = TrashStorage()
++  private val now = 1_700_000_000_000L
++
++  @Before
++  fun setUp() {
++    storageRoot = tempFolder.newFolder("shared_storage").toPath().toRealPath()
++    dao = FakeTrashEntryDao()
++  }
++
++  private fun repository(): TrashRepository = TrashRepository(
++    trashEntryDao = dao,
++    operationHistoryDao = FakeOperationHistoryDao(),
++    storageVolumeResolver = object : StorageVolumeResolver {
++      override fun resolvePrimarySharedStorage(): StorageRootResolution =
++        StorageRootResolution.Available(storageRoot, "Armazenamento de teste")
++    },
++    mediaScannerHook = MediaScannerHook { },
++    scanLogger = object : ScanLogger {
++      override fun logEvent(tag: String, message: String) = Unit
++    },
++    applicationId = "io.github.km20197.limpadroid",
++    clock = AppClock { now },
++  )
++
++  private fun downloadCandidate(name: String, content: String): Pair<Path, Candidate> {
++    val dir = Files.createDirectories(storageRoot.resolve("Download"))
++    val file = Files.writeString(dir.resolve(name), content)
++    val mtime = 1_690_000_000_000L
++    Files.setLastModifiedTime(file, FileTime.fromMillis(mtime))
++    return file to Candidate(
++      path = file.toString(),
++      sizeBytes = content.length.toLong(),
++      lastModified = mtime,
++      category = Category.SUPERFLUOUS,
++      ruleId = "PARTIAL_DL",
++      confidence = Confidence.HIGH,
++    )
++  }
++
++  private fun inTrashRow(
++    id: String,
++    trashPath: Path,
++    originalPath: Path,
++    state: TrashEntryState = TrashEntryState.IN_TRASH,
++  ) = TrashEntryEntity(
++    id = id,
++    originalPath = originalPath.toString(),
++    trashPath = trashPath.toString(),
++    sizeBytes = 4L,
++    sha256 = null,
++    originalMtime = 100L,
++    category = Category.SUPERFLUOUS.name,
++    ruleId = "TEST",
++    deletedAt = now - 10_000L,
++    expiresAt = now - 1L,
++    state = state.name,
++  )
++
++  // ---- A1: falha ou cancelamento depois que o arquivo já está na lixeira ----
++
++  @Test
++  fun `failure after the file reached the trash keeps the entry PENDING and reconcile promotes it`() = runTest {
++    val (file, candidate) = downloadCandidate("relatorio.tmp", "conteudo")
++    dao.failMovedStateUpdates = Int.MAX_VALUE
++    val repo = repository()
++
++    val result = repo.moveToTrash(candidate)
++
++    assertTrue(result is TrashMoveResult.Failed)
++    assertFalse(Files.exists(file, LinkOption.NOFOLLOW_LINKS))
++    val pending = dao.rows.values.single()
++    assertEquals(TrashEntryState.PENDING.name, pending.state)
++    assertTrue(Files.exists(java.nio.file.Paths.get(pending.trashPath), LinkOption.NOFOLLOW_LINKS))
++
++    dao.failMovedStateUpdates = 0
++    repo.reconcilePendingAndRebuildIndex()
++
++    val recovered = dao.rows.getValue(pending.id)
++    assertEquals(TrashEntryState.IN_TRASH.name, recovered.state)
++    assertTrue(
++      Files.exists(
++        storage.resolveMetadataPath(java.nio.file.Paths.get(pending.trashPath).parent),
++        LinkOption.NOFOLLOW_LINKS,
++      ),
++    )
++  }
++
++  @Test
++  fun `a single failure after the move is settled immediately and reported as Moved`() = runTest {
++    val (file, candidate) = downloadCandidate("foto.tmp", "dados")
++    dao.failMovedStateUpdates = 1
++    val repo = repository()
++
++    val result = repo.moveToTrash(candidate)
++
++    assertTrue(result is TrashMoveResult.Moved)
++    assertFalse(Files.exists(file, LinkOption.NOFOLLOW_LINKS))
++    assertEquals(TrashEntryState.IN_TRASH.name, dao.rows.values.single().state)
++  }
++
++  @Test
++  fun `cancellation after the move still records the entry and propagates`() = runTest {
++    val (file, candidate) = downloadCandidate("video.tmp", "bytes")
++    var fired = false
++    dao.beforeMovedStateUpdate = {
++      if (!fired) {
++        fired = true
++        currentCoroutineContext()[Job]!!.cancel()
++        currentCoroutineContext().ensureActive()
++      }
++    }
++    val repo = repository()
++
++    val moveJob = launch { repo.moveToTrash(candidate) }
++    moveJob.join()
++
++    assertTrue(fired)
++    assertTrue(moveJob.isCancelled)
++    assertFalse(Files.exists(file, LinkOption.NOFOLLOW_LINKS))
++    val row = dao.rows.values.single()
++    assertEquals(TrashEntryState.IN_TRASH.name, row.state)
++    assertTrue(Files.exists(java.nio.file.Paths.get(row.trashPath), LinkOption.NOFOLLOW_LINKS))
++  }
++
++  @Test
++  fun `reconcile recovers FAILED entries whose payload is already in the trash`() = runTest {
++    val trashRoot = storage.resolveTrashRoot(storageRoot)
++    val entryDir = storage.allocateEntryDir(trashRoot, "legacy-failed", now)
++    Files.createDirectories(entryDir)
++    val payload = Files.writeString(storage.resolvePayloadPath(entryDir), "dados")
++    dao.rows["legacy-failed"] = inTrashRow(
++      id = "legacy-failed",
++      trashPath = payload,
++      originalPath = storageRoot.resolve("Download/ausente.tmp"),
++      state = TrashEntryState.FAILED,
++    )
++
++    repository().reconcilePendingAndRebuildIndex()
++
++    assertEquals(TrashEntryState.IN_TRASH.name, dao.rows.getValue("legacy-failed").state)
++    assertTrue(Files.exists(storage.resolveMetadataPath(entryDir), LinkOption.NOFOLLOW_LINKS))
++  }
++
++  // ---- A2: caminhos da lixeira nunca são confiados cegamente ----
++
++  @Test
++  fun `purge and restore refuse an unmanaged trashPath and keep every file`() = runTest {
++    val dcim = Files.createDirectories(storageRoot.resolve("DCIM/Camera"))
++    val photos = listOf("a.jpg", "b.jpg", "c.jpg", "d.jpg").map { Files.writeString(dcim.resolve(it), "foto-$it") }
++    val sibling = Files.writeString(dcim.resolve("irma.jpg"), "irma")
++    val original = storageRoot.resolve("Pictures/x.jpg")
++    dao.rows["t-expired"] = inTrashRow("t-expired", photos[0], original)
++    dao.rows["t-empty"] = inTrashRow("t-empty", photos[1], original).copy(expiresAt = now + 100_000L)
++    dao.rows["t-manual"] = inTrashRow("t-manual", photos[2], original).copy(expiresAt = now + 100_000L)
++    dao.rows["t-restore"] = inTrashRow("t-restore", photos[3], original).copy(expiresAt = now + 100_000L)
++    val repo = repository()
++
++    assertEquals(0, repo.purgeExpired().purgedCount)
++    assertEquals(TrashEntryState.FAILED.name, dao.rows.getValue("t-expired").state)
++
++    assertEquals(0, repo.deletePermanently("t-manual").purgedCount)
++    assertEquals(TrashEntryState.FAILED.name, dao.rows.getValue("t-manual").state)
++
++    assertTrue(repo.restoreEntry("t-restore") is TrashRestoreResult.Rejected)
++
++    assertEquals(0, repo.emptyTrash().purgedCount)
++    assertEquals(TrashEntryState.FAILED.name, dao.rows.getValue("t-empty").state)
++
++    photos.forEach { assertTrue(Files.exists(it, LinkOption.NOFOLLOW_LINKS)) }
++    assertTrue(Files.exists(sibling, LinkOption.NOFOLLOW_LINKS))
++    assertTrue(Files.exists(dcim, LinkOption.NOFOLLOW_LINKS))
++  }
++
++  @Test
++  fun `index rebuild derives the payload path from the directory and ignores a tampered metadata trashPath`() =
++    runTest {
++      val external = Files.writeString(
++        Files.createDirectories(storageRoot.resolve("Download")).resolve("externo.bin"),
++        "nao-e-da-lixeira",
++      )
++      val trashRoot = storage.resolveTrashRoot(storageRoot)
++      val entryDir = storage.allocateEntryDir(trashRoot, "rebuilt-1", now)
++      Files.createDirectories(entryDir)
++      val payload = Files.writeString(storage.resolvePayloadPath(entryDir), "legitimo")
++      storage.writeMetadata(
++        storage.resolveMetadataPath(entryDir),
++        TrashMetadataPayload(
++          id = "rebuilt-1",
++          originalPath = storageRoot.resolve("Pictures/old.jpg").toString(),
++          trashPath = external.toString(),
++          sizeBytes = 8L,
++          sha256 = null,
++          originalMtime = 1L,
++          category = Category.SUPERFLUOUS.name,
++          ruleId = "TEST",
++          deletedAt = now - 10_000L,
++          expiresAt = now - 1L,
++        ),
++      )
++      val repo = repository()
++
++      repo.reconcilePendingAndRebuildIndex()
++
++      assertEquals(payload.toString(), dao.rows.getValue("rebuilt-1").trashPath)
++      assertEquals(1, repo.purgeExpired().purgedCount)
++      assertFalse(Files.exists(entryDir, LinkOption.NOFOLLOW_LINKS))
++      assertTrue(Files.exists(external, LinkOption.NOFOLLOW_LINKS))
++    }
++
++  // ---- A4: exclusão mútua entre movimentação e manutenção ----
++
++  @Test
++  fun `reconcile waits for a move in progress instead of interfering with it`() = runTest {
++    val (file, candidate) = downloadCandidate("grande.tmp", "conteudo-grande")
++    val gate = CompletableDeferred<Unit>()
++    dao.onUpsert = { entry -> if (entry.state == TrashEntryState.PENDING.name) gate.await() }
++    val repo = repository()
++
++    val moveJob = launch { repo.moveToTrash(candidate) }
++    yield()
++    var reconciled = false
++    val reconcileJob = launch {
++      repo.reconcilePendingAndRebuildIndex()
++      reconciled = true
++    }
++    yield()
++    // Tempo real (Dispatchers.Default): sem exclusão mútua, a reconciliação já teria consultado o índice.
++    withContext(Dispatchers.Default) { delay(300) }
++
++    assertEquals(0, dao.getByStateCalls)
++    assertFalse(reconciled)
++
++    gate.complete(Unit)
++    moveJob.join()
++    reconcileJob.join()
++
++    assertTrue(reconciled)
++    assertFalse(Files.exists(file, LinkOption.NOFOLLOW_LINKS))
++    val row = dao.rows.values.single()
++    assertEquals(TrashEntryState.IN_TRASH.name, row.state)
++    assertNotNull(row.trashPath)
++  }
++
++  // ---- Fakes ----
++
++  private class FakeTrashEntryDao : TrashEntryDao {
++    val rows = LinkedHashMap<String, TrashEntryEntity>()
++    var failMovedStateUpdates = 0
++    var getByStateCalls = 0
++    var beforeMovedStateUpdate: (suspend () -> Unit)? = null
++    var onUpsert: (suspend (TrashEntryEntity) -> Unit)? = null
++    private val inTrash = MutableStateFlow<List<TrashEntryEntity>>(emptyList())
++    private val purged = MutableStateFlow<List<TrashEntryEntity>>(emptyList())
++
++    private fun publish() {
++      inTrash.value = rows.values.filter { it.state == TrashEntryState.IN_TRASH.name }
++      purged.value = rows.values.filter { it.state == TrashEntryState.PURGED.name }
++    }
++
++    override fun observeInTrashEntries(): Flow<List<TrashEntryEntity>> = inTrash
++
++    override fun observePurgedEntries(): Flow<List<TrashEntryEntity>> = purged
++
++    override suspend fun getById(id: String): TrashEntryEntity? = rows[id]
++
++    override suspend fun getByState(state: String): List<TrashEntryEntity> {
++      getByStateCalls += 1
++      return rows.values.filter { it.state == state }
++    }
++
++    override suspend fun getExpiredEntries(nowMillis: Long): List<TrashEntryEntity> =
++      rows.values.filter { it.state == TrashEntryState.IN_TRASH.name && it.expiresAt <= nowMillis }
++
++    override suspend fun upsert(entry: TrashEntryEntity) {
++      onUpsert?.invoke(entry)
++      rows[entry.id] = entry
++      publish()
++    }
++
++    override suspend fun updateMovedState(
++      id: String,
++      state: String,
++      trashPath: String,
++      sizeBytes: Long,
++      sha256: String?,
++      originalMtime: Long,
++      failureReason: String?,
++    ) {
++      beforeMovedStateUpdate?.invoke()
++      if (failMovedStateUpdates > 0) {
++        failMovedStateUpdates -= 1
++        throw IOException("falha simulada ao gravar o índice")
++      }
++      val current = rows[id] ?: return
++      rows[id] = current.copy(
++        state = state,
++        trashPath = trashPath,
++        sizeBytes = sizeBytes,
++        sha256 = sha256,
++        originalMtime = originalMtime,
++        failureReason = failureReason,
++      )
++      publish()
++    }
++
++    override suspend fun updateLifecycleState(
++      id: String,
++      state: String,
++      restoredAt: Long?,
++      restoredPath: String?,
++      purgedAt: Long?,
++      failureReason: String?,
++    ) {
++      val current = rows[id] ?: return
++      rows[id] = current.copy(
++        state = state,
++        restoredAt = restoredAt,
++        restoredPath = restoredPath,
++        purgedAt = purgedAt,
++        failureReason = failureReason,
++      )
++      publish()
++    }
++  }
++
++  private class FakeOperationHistoryDao : OperationHistoryDao {
++    override fun observeRecent(limit: Int): Flow<List<OperationHistoryEntity>> = flowOf(emptyList())
++
++    override suspend fun insert(record: OperationHistoryEntity): Long = 1L
++  }
++}
+diff --git a/docs/CORRECOES_AUDITORIA.md b/docs/CORRECOES_AUDITORIA.md
+new file mode 100644
+index 0000000..ce3240e
+--- /dev/null
++++ b/docs/CORRECOES_AUDITORIA.md
+@@ -0,0 +1,17 @@
++# Correções da auditoria (A1 a A4)
++
++Referência: auditoria do commit `f91c8cb`. Todas as correções preservam as APIs públicas existentes.
++
++| Id | Problema | Correção | Arquivos |
++|---|---|---|---|
++| A1 | Falha ou cancelamento depois do `Files.move` marcava a entrada como `FAILED`, deixando o arquivo preso e invisível na lixeira. | O estado é resolvido pelo que existe em disco (`settleInterruptedMove`), inclusive com a corrotina cancelada (`NonCancellable`); `CancellationException` é relançada; a reconciliação passou a tratar também entradas `FAILED` com payload já na lixeira. | `TrashRepository` |
++| A2 | `trashPath` (índice Room ou `metadata.json`) era usado sem validação em exclusões recursivas do diretório pai. | Só se apaga ou restaura um caminho `<raiz>/.lixeira/<yyyyMMdd>/<id>/payload` (`TrashStorage.isManagedPayloadPath`). A reconstrução do índice deriva o payload do diretório e exige `id` igual ao nome do diretório. Caminho inválido marca a entrada como `FAILED` e nada é apagado. | `TrashStorage`, `TrashRepository` |
++| A3 | `ORPHAN_MEDIA_PKG` vinha com confiança `HIGH` e pré-selecionado mesmo sem prova de remoção; lista de pacotes vazia ou parcial tornava todas as pastas de `Android/media` candidatas. | `HIGH` somente com registro histórico de remoção; caso contrário `MEDIUM` e desmarcado. `InstalledAppsSnapshot.isReliable` impede a análise de órfãos quando a leitura falha ou encolhe mais da metade do histórico (≥ 8 aplicativos), e nesse caso nenhuma remoção é registrada. | `OrphanRules`, `OrphanScanEngine`, `AndroidInstalledAppsRepository`, `InstalledAppsRepository` |
++| A4 | Reconciliação do `PurgeWorker` e operações em curso podiam interferir entre si. | `Mutex` único em todas as operações que alteram a lixeira. | `TrashRepository` |
++
++Correções adicionais no mesmo código:
++
++- Restauração nunca sobrescreve um arquivo criado entre a escolha do destino e a movimentação (`FileAlreadyExistsException` reinicia com o próximo sufixo livre; o destino de terceiros jamais é apagado em caso de falha).
++- Verificação de espaço livre antes da cópia de contingência (`InsufficientSpaceException`).
++
++Testes novos: `TrashStorageTest` (6), `TrashRepositoryResilienceTest` (7, sem Room/Robolectric), `OrphanRulesTest` e `OrphanScanEngineTest` (3 ajustados/novos) e `AndroidInstalledAppsRepositoryRobolectricTest` (3).
