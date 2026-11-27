@@ -154,7 +154,7 @@ jobs:
         run: rm -f "${RUNNER_TEMP}/limpadroid-release.jks" debug.keystore
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@v3.0.4
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
